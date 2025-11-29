@@ -71,9 +71,23 @@ class TradingEnv(gym.Env):
         self.portfolio_value = self.cash + shares * price
 
     def _calculate_reward(self):
-        pct_change = (self.portfolio_value - self.previous_value) / (self.previous_value or 1)
-        sharpe = np.mean(self.returns) / (np.std(self.returns) + 1e-8) if self.returns else 0
-        return pct_change * 10 + sharpe * 0.5
+        """Log-return-based reward — stable and scale-invariant"""
+        if self.previous_value <= 0:
+            return 0.0
+        # Use log portfolio growth (same scale as ret_1h)
+        log_return = np.log(self.portfolio_value / self.previous_value)
+        # Bonus for being in the market during up moves
+        market_move = self.data["ret_1h"].iloc[self.current_step] if self.current_step < len(self.data) else 0
+        direction_bonus = 1.0 if (self.position == 1 and market_move > 0) or (self.position == -1 and market_move < 0) else 0.8
+
+        # Sharpe-like smoothing
+        if len(self.returns) > 20:
+            sharpe = np.mean(self.returns) / (np.std(self.returns) + 1e-6)
+            reward = log_return * 50 + sharpe * 2
+        else:
+            reward = log_return * 50
+
+        return float(reward * direction_bonus)
 
     def step(self, action):
         current_price = self._get_price()

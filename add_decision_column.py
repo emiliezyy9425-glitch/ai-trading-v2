@@ -330,9 +330,14 @@ def add_decision_column(
             f"Saved historical data (shared for supervised and PPO) to {historical_path} with {len(final_df)} rows"
         )
 
-        # Validate feature count
-        expected_features = len(FEATURE_NAMES)  # 65
-        actual_features = len(final_df[FEATURE_NAMES].columns)
+        # Validate feature count (canonical + golden price features)
+        expected_features = len(FEATURE_NAMES) + len(GOLDEN_PRICE_FEATURES)
+        actual_feature_columns = [
+            col
+            for col in final_df.columns
+            if col in FEATURE_NAMES or col in GOLDEN_PRICE_FEATURES
+        ]
+        actual_features = len(actual_feature_columns)
         if actual_features != expected_features:
             logger.error(
                 f"Feature count mismatch in data: expected {expected_features}, got {actual_features}"

@@ -209,6 +209,7 @@ from feature_engineering import (
     encode_td9,
     encode_vol_cat,
     encode_zig,
+    add_golden_price_features,
 )
 from sp500_breadth import calculate_s5tw_ibkr
 import atexit
@@ -2231,6 +2232,7 @@ def _seed_feature_history_from_ibkr(ticker: str, ib_client: Optional[IB]) -> boo
     start = price_df.index.min().to_pydatetime()
     end = price_df.index.max().to_pydatetime()
     dataset = _historical_finalise_feature_frame(features, ticker, start, end)
+    dataset = add_golden_price_features(dataset)
     if dataset.empty:
         logger.warning(
             "⚠️ Processed IBKR dataset for %s produced no usable feature rows.",
@@ -2664,6 +2666,7 @@ def build_live_features_for_ml(
         )
 
     dataset = _historical_finalise_feature_frame(augmented, ticker, start, end)
+    dataset = add_golden_price_features(dataset)
     if dataset.empty:
         logger.warning(
             "Historical finalisation produced no rows for live data on %s", ticker

@@ -4,6 +4,7 @@ from __future__ import annotations
 import ast
 import math
 import re
+import logging
 from typing import Iterable, Sequence, Tuple
 
 import pandas as pd
@@ -11,6 +12,8 @@ import numpy as np
 
 from indicators import parse_fibonacci
 from self_learn import FEATURE_NAMES
+
+logger = logging.getLogger(__name__)
 
 # Number of Fibonacci extension/retracement levels we persist per timeframe
 FIB_LEVEL_COUNT = 6
@@ -136,6 +139,79 @@ def derive_fibonacci_features(summary: object, price: object) -> Tuple[list[floa
     else:
         zone_delta = 0.0
     return levels, zone_delta
+
+
+def add_golden_price_features(
+    df: pd.DataFrame, group_key: str | None = "ticker"
+) -> pd.DataFrame:
+    """Return ``df`` with hourly return/z-score/Bollinger-position features.
+
+    The helper mirrors the data-prep logic used during training so live trading
+    and backtests feed the model the same price-derived signals. It is
+    intentionally tolerant: if required inputs are missing the original frame is
+    returned unchanged.
+    """
+
+    required_columns = {"price_1h", "bb_upper_1h", "bb_lower_1h"}
+    missing_required = [col for col in required_columns if col not in df.columns]
+    if missing_required:
+        logger.warning(
+            "Skipping golden price feature generation; missing required columns: %s",
+            missing_required,
+        )
+        return df
+
+    def _process_group(group: pd.DataFrame) -> pd.DataFrame:
+        local = group.copy()
+
+        if "timestamp" in local.columns:
+            local["timestamp"] = pd.to_datetime(
+                local["timestamp"], utc=True, errors="coerce"
+            )
+            local = local.dropna(subset=["timestamp"]).sort_values("timestamp")
+            local = local.set_index("timestamp")
+        elif isinstance(local.index, pd.DatetimeIndex):
+            local = local.sort_index()
+        else:
+            logger.warning(
+                "Unable to compute golden price features without a timestamp column or index."
+            )
+            return group
+
+        local = local.asfreq("h")
+
+        if group_key and group_key in local.columns:
+            local[group_key] = group[group_key].iloc[0]
+
+        local = local.reset_index().rename(columns={"index": "timestamp"})
+
+        local["ret_1h"] = np.log(local["price_1h"] / local["price_1h"].shift(1))
+        local["ret_4h"] = np.log(local["price_1h"] / local["price_1h"].shift(4))
+        local["ret_24h"] = np.log(local["price_1h"] / local["price_1h"].shift(24))
+
+        rolling_mean = local["price_1h"].rolling(window=120, min_periods=60).mean()
+        rolling_std = local["price_1h"].rolling(window=120, min_periods=60).std()
+        local["price_z_120h"] = (local["price_1h"] - rolling_mean) / rolling_std
+
+        local["bb_position_1h"] = (
+            local["price_1h"] - local["bb_lower_1h"]
+        ) / (local["bb_upper_1h"] - local["bb_lower_1h"] + 1e-8)
+
+        local["bb_position_1h"] = local["bb_position_1h"].clip(0, 1)
+        local["price_z_120h"] = local["price_z_120h"].clip(-5, 5)
+
+        fill_cols = ["ret_1h", "ret_4h", "ret_24h", "price_z_120h", "bb_position_1h"]
+        local[fill_cols] = local[fill_cols].ffill().bfill()
+
+        return local
+
+    if group_key and group_key in df.columns:
+        processed = df.groupby(group_key, group_keys=False).apply(_process_group)
+    else:
+        processed = _process_group(df)
+
+    logger.info("Added golden price features (returns, z-score, Bollinger position).")
+    return processed
 
 
 def extract_pivot_prices(value: object) -> list[float]:

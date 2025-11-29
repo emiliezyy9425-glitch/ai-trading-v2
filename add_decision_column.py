@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 
 from feature_engineering import (
+    add_golden_price_features,
     count_fib_timezones,
     derive_fibonacci_features,
     encode_td9,
@@ -228,6 +229,10 @@ def add_decision_column(
             else:
                 df = df.sort_values('timestamp').reset_index(drop=True)
 
+        # Add golden price derivatives then drop raw price columns
+        if 'timestamp' in df.columns:
+            df = add_golden_price_features(df)
+
 
         # Always recalculate decision, forcing Buy/Sell only (no Hold)
         logger.info("Recalculating decision column, forcing Buy/Sell only.")
@@ -255,7 +260,17 @@ def add_decision_column(
 
         df = df.drop(columns=['future_price', 'future_return'], errors='ignore')
 
-        # Align to FEATURE_NAMES (91)
+        # Drop any remaining raw price columns now that decisions are computed
+        dropped_prices = [
+            col
+            for col in ['price_1h', 'price_4h', 'price_1d']
+            if col in df.columns
+        ]
+        if dropped_prices:
+            df = df.drop(columns=dropped_prices)
+            logger.info("Removed raw price columns after labeling: %s", dropped_prices)
+
+        # Align to FEATURE_NAMES (86)
         core_cols = ['timestamp', 'ticker', 'decision']
         price_cols = [col for col in df.columns if col.startswith('price_') and col not in FEATURE_NAMES]  # Raw prices only
         feature_cols = [c for c in df.columns if c not in core_cols + price_cols]
@@ -282,7 +297,7 @@ def add_decision_column(
         )
 
         # Validate feature count
-        expected_features = len(FEATURE_NAMES)  # 91
+        expected_features = len(FEATURE_NAMES)  # 86
         actual_features = len(final_df[FEATURE_NAMES].columns)
         if actual_features != expected_features:
             logger.error(

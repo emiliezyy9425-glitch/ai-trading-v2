@@ -14,6 +14,7 @@ from scripts.generate_historical_data import (
     _augment_timeframe_features,
     _finalise_feature_frame,
 )
+from feature_engineering import add_golden_price_features
 from ml_predictor import predict_with_all_models, independent_model_decisions as ensemble_vote
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(message)s", datefmt="%H:%M:%S")
@@ -88,6 +89,7 @@ def load_latest_features(ticker: str):
 
     # Generate full feature set
     features = _finalise_feature_frame(recent, ticker, start=None, end=None)
+    features = add_golden_price_features(features)
 
     # Restore index and close price
     features.index = original_index[-len(features):]

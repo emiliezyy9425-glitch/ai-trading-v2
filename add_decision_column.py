@@ -331,7 +331,7 @@ def add_decision_column(
         )
 
         # Validate feature count
-        expected_features = len(FEATURE_NAMES)  # 86
+        expected_features = len(FEATURE_NAMES)  # 65
         actual_features = len(final_df[FEATURE_NAMES].columns)
         if actual_features != expected_features:
             logger.error(

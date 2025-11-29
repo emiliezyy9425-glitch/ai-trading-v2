@@ -21,50 +21,20 @@ import joblib
 # FEATURE NAMES — AUTO-GENERATED FROM CSV
 # ================================
 
-# Base feature names (without suffix) used by derived helpers
-_BASE_FEATURES: List[str] = [
-    "rsi",
-    "macd",
-    "signal",
-    "ema10",
-    "ema10_dev",
-    "rsi_change",
-    "macd_change",
-    "ema10_change",
-    "price_above_ema10",
-    "bb_upper",
-    "bb_lower",
-    "bb_mid",
-    "volume",
-    "td9",
-    "zig",
-    "atr",
-    "adx",
-    "obv",
-    "stoch_k",
-    "stoch_d",
-]
-
 # Explicit per-timeframe feature schema (order matters for model compatibility)
 FEATURE_NAMES_1H: List[str] = [
+    "price_z_120h",
     "rsi_1h",
     "macd_1h",
     "signal_1h",
-    "ema10_1h",
     "ema10_dev_1h",
     "rsi_change_1h",
     "macd_change_1h",
     "ema10_change_1h",
     "price_above_ema10_1h",
-    "bb_upper_1h",
-    "bb_lower_1h",
-    "bb_mid_1h",
-    "volume_1h",
     "td9_1h",
     "zig_1h",
-    "atr_1h",
     "adx_1h",
-    "obv_1h",
     "stoch_k_1h",
     "stoch_d_1h",
 ]
@@ -73,20 +43,13 @@ FEATURE_NAMES_4H: List[str] = [
     "rsi_4h",
     "macd_4h",
     "signal_4h",
-    "ema10_4h",
     "ema10_dev_4h",
     "macd_change_4h",
     "ema10_change_4h",
     "price_above_ema10_4h",
-    "bb_upper_4h",
-    "bb_lower_4h",
-    "bb_mid_4h",
-    "volume_4h",
     "td9_4h",
     "zig_4h",
-    "atr_4h",
     "adx_4h",
-    "obv_4h",
     "stoch_k_4h",
     "stoch_d_4h",
 ]
@@ -94,51 +57,71 @@ FEATURE_NAMES_4H: List[str] = [
 FEATURE_NAMES_1D: List[str] = [
     "macd_1d",
     "signal_1d",
-    "ema10_1d",
     "ema10_dev_1d",
     "macd_change_1d",
     "ema10_change_1d",
     "price_above_ema10_1d",
-    "bb_upper_1d",
-    "bb_lower_1d",
-    "bb_mid_1d",
-    "volume_1d",
     "td9_1d",
     "zig_1d",
-    "atr_1d",
-    "obv_1d",
     "stoch_k_1d",
     "stoch_d_1d",
 ]
 
-_PATTERN_BASES: List[str] = [
-    "pattern_bullish_engulfing",
-    "pattern_bearish_engulfing",
-    "pattern_hammer",
-    "pattern_shooting_star",
-    "pattern_marubozu_bull",
-    "pattern_marubozu_bear",
-    "pattern_morning_star",
-    "pattern_evening_star",
+PATTERN_FEATURES_1H: List[str] = [
+    "pattern_bullish_engulfing_1h",
+    "pattern_bearish_engulfing_1h",
+    "pattern_hammer_1h",
+    "pattern_shooting_star_1h",
+    "pattern_marubozu_bull_1h",
+    "pattern_marubozu_bear_1h",
+    "pattern_morning_star_1h",
+    "pattern_evening_star_1h",
 ]
 
-_PATTERN_TIMEFRAMES: List[str] = ["1h", "4h", "1d"]
-
-CANDLESTICK_FEATURES: List[str] = [
-    f"{base}_{tf}"
-    for tf in _PATTERN_TIMEFRAMES
-    for base in _PATTERN_BASES
+PATTERN_FEATURES_4H: List[str] = [
+    "pattern_bullish_engulfing_4h",
+    "pattern_bearish_engulfing_4h",
+    "pattern_hammer_4h",
+    "pattern_shooting_star_4h",
+    "pattern_marubozu_bull_4h",
+    "pattern_marubozu_bear_4h",
+    "pattern_morning_star_4h",
+    "pattern_evening_star_4h",
 ]
 
-ADDITIONAL_FEATURES: List[str] = ["sp500_above_20d"]
+PATTERN_FEATURES_1D: List[str] = [
+    "pattern_bullish_engulfing_1d",
+    "pattern_bearish_engulfing_1d",
+    "pattern_hammer_1d",
+    "pattern_shooting_star_1d",
+    "pattern_marubozu_bull_1d",
+    "pattern_marubozu_bear_1d",
+    "pattern_morning_star_1d",
+    "pattern_evening_star_1d",
+]
+
+CANDLESTICK_FEATURES: List[str] = (
+    PATTERN_FEATURES_1H + PATTERN_FEATURES_4H + PATTERN_FEATURES_1D
+)
+
+ADDITIONAL_FEATURES: List[str] = [
+    "sp500_above_20d",
+    "ret_1h",
+    "ret_4h",
+    "ret_24h",
+    "bb_position_1h",
+]
 
 # Full list for RF, PPO, ensemble
 FEATURE_NAMES: List[str] = (
     FEATURE_NAMES_1H
     + FEATURE_NAMES_4H
     + FEATURE_NAMES_1D
-    + ADDITIONAL_FEATURES
-    + CANDLESTICK_FEATURES
+    + ["sp500_above_20d"]
+    + PATTERN_FEATURES_1H
+    + PATTERN_FEATURES_4H
+    + PATTERN_FEATURES_1D
+    + ["ret_1h", "ret_4h", "ret_24h", "bb_position_1h"]
 )
 
 # ================================

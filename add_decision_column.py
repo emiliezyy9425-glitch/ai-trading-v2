@@ -270,22 +270,56 @@ def add_decision_column(
             df = df.drop(columns=dropped_prices)
             logger.info("Removed raw price columns after labeling: %s", dropped_prices)
 
-        # Align to FEATURE_NAMES (86)
+        # ===================================================================
+        # NEW SAFE ALIGNMENT — PROTECTS YOUR GOLDEN PRICE FEATURES FOREVER
+        # ===================================================================
         core_cols = ['timestamp', 'ticker', 'decision']
-        price_cols = [col for col in df.columns if col.startswith('price_') and col not in FEATURE_NAMES]  # Raw prices only
-        feature_cols = [c for c in df.columns if c not in core_cols + price_cols]
-        missing = [c for c in FEATURE_NAMES if c not in feature_cols]
-        if missing:
-            logger.warning(f"Adding missing features: {missing}")
-            for col in missing:
+
+        # Remove any remaining raw price columns (safe)
+        raw_price_cols = [
+            c for c in df.columns if c.startswith('price_') and c in ['price_1h', 'price_4h', 'price_1d']
+        ]
+        if raw_price_cols:
+            df = df.drop(columns=raw_price_cols)
+            logger.info(f"Safely removed raw price columns: {raw_price_cols}")
+
+        # Define your 5 golden price features — these are PERMANENTLY allowed
+        GOLDEN_PRICE_FEATURES = {
+            'ret_1h',
+            'ret_4h',
+            'ret_24h',
+            'price_z_120h',
+            'bb_position_1h'
+        }
+
+        # All valid columns = core + golden + canonical FEATURE_NAMES
+        valid_columns = set(core_cols) | GOLDEN_PRICE_FEATURES | set(FEATURE_NAMES)
+
+        # Add any missing canonical features (should be none in your case)
+        missing_canonical = [c for c in FEATURE_NAMES if c not in df.columns]
+        if missing_canonical:
+            logger.warning(f"Adding {len(missing_canonical)} missing canonical features (filling with 0)")
+            for col in missing_canonical:
                 df[col] = 0.0
-        extra = [c for c in feature_cols if c not in FEATURE_NAMES]
-        if extra:
-            logger.warning(f"Dropping unexpected columns: {extra}")
-            df = df.drop(columns=extra)
+
+        # Drop only truly foreign columns — never touch golden features
+        current_cols = set(df.columns)
+        foreign_cols = current_cols - valid_columns
+        if foreign_cols:
+            logger.info(f"Safely dropping {len(foreign_cols)} foreign columns (golden features preserved)")
+            df = df.drop(columns=foreign_cols)
+        else:
+            logger.info("Perfect! All columns are expected. Golden features fully preserved.")
+
+        # Final sanity check
+        logger.info(
+            f"Final dataset has {len(df.columns)} columns, "
+            f"{len(GOLDEN_PRICE_FEATURES.intersection(df.columns))} golden price features present."
+        )
 
         # Assemble final dataframe and save
-        final_df = df[core_cols[:2] + price_cols + FEATURE_NAMES + [core_cols[2]]]
+        golden_features_present = [col for col in GOLDEN_PRICE_FEATURES if col in df.columns]
+        final_df = df[core_cols[:2] + golden_features_present + FEATURE_NAMES + [core_cols[2]]]
         save_dataframe_with_timestamp_validation(
             final_df,
             historical_path,

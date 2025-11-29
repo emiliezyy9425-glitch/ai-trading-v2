@@ -144,11 +144,12 @@ def derive_fibonacci_features(summary: object, price: object) -> Tuple[list[floa
 def add_golden_price_features(
     df: pd.DataFrame, group_key: str | None = "ticker"
 ) -> pd.DataFrame:
-    """Return ``df`` with return/z-score/Bollinger-position features across timeframes.
+    """Return ``df`` with hourly return/z-score/Bollinger-position features.
 
     The helper mirrors the data-prep logic used during training so live trading
-    and backtests feed the model the same price-derived signals. It now covers
-    1h/4h/1d prices when available, filling missing inputs gracefully.
+    and backtests feed the model the same price-derived signals. It is
+    intentionally tolerant: if required inputs are missing the original frame is
+    returned unchanged.
     """
 
     required_columns = {"price_1h", "bb_upper_1h", "bb_lower_1h"}
@@ -159,23 +160,6 @@ def add_golden_price_features(
             missing_required,
         )
         return df
-
-    optional_timeframes = {
-        "4h": {
-            "price": "price_4h",
-            "upper": "bb_upper_4h",
-            "lower": "bb_lower_4h",
-            "window": 30,  # 30×4h ≈ 120h lookback
-            "min_periods": 15,
-        },
-        "1d": {
-            "price": "price_1d",
-            "upper": "bb_upper_1d",
-            "lower": "bb_lower_1d",
-            "window": 5,  # 5×1d ≈ 120h lookback
-            "min_periods": 3,
-        },
-    }
 
     def _process_group(group: pd.DataFrame) -> pd.DataFrame:
         local = group.copy()
@@ -201,7 +185,6 @@ def add_golden_price_features(
 
         local = local.reset_index().rename(columns={"index": "timestamp"})
 
-        # 1h-derived signals (anchor schema)
         local["ret_1h"] = np.log(local["price_1h"] / local["price_1h"].shift(1))
         local["ret_4h"] = np.log(local["price_1h"] / local["price_1h"].shift(4))
         local["ret_24h"] = np.log(local["price_1h"] / local["price_1h"].shift(24))
@@ -214,95 +197,10 @@ def add_golden_price_features(
             local["price_1h"] - local["bb_lower_1h"]
         ) / (local["bb_upper_1h"] - local["bb_lower_1h"] + 1e-8)
 
-        # Optional 4h and 1d variants when corresponding prices/Bollinger bands exist
-        for suffix, meta in optional_timeframes.items():
-            price_col, upper_col, lower_col = (
-                meta["price"],
-                meta["upper"],
-                meta["lower"],
-            )
-            if price_col not in local.columns or upper_col not in local.columns or lower_col not in local.columns:
-                continue
+        local["bb_position_1h"] = local["bb_position_1h"].clip(0, 1)
+        local["price_z_120h"] = local["price_z_120h"].clip(-5, 5)
 
-            rule = "4H" if suffix == "4h" else "1D"
-            resampled = (
-                local.set_index("timestamp")[[price_col, upper_col, lower_col]].resample(rule).last()
-            )
-            resampled = resampled.asfreq(rule).ffill().reset_index().rename(columns={"index": "timestamp"})
-
-            if suffix == "4h":
-                resampled["ret_4h_4h"] = np.log(
-                    resampled[price_col] / resampled[price_col].shift(1)
-                )
-                resampled["ret_24h_4h"] = np.log(
-                    resampled[price_col] / resampled[price_col].shift(6)
-                )
-                resampled["price_z_120h_4h"] = (
-                    resampled[price_col]
-                    - resampled[price_col]
-                    .rolling(window=meta["window"], min_periods=meta["min_periods"])
-                    .mean()
-                ) / resampled[price_col].rolling(
-                    window=meta["window"], min_periods=meta["min_periods"]
-                ).std()
-                resampled["bb_position_4h"] = (
-                    resampled[price_col] - resampled[lower_col]
-                ) / (resampled[upper_col] - resampled[lower_col] + 1e-8)
-                merge_cols = [
-                    "timestamp",
-                    "ret_4h_4h",
-                    "ret_24h_4h",
-                    "price_z_120h_4h",
-                    "bb_position_4h",
-                ]
-            else:
-                resampled["ret_1d"] = np.log(
-                    resampled[price_col] / resampled[price_col].shift(1)
-                )
-                resampled["ret_4h_1d"] = np.log(
-                    resampled[price_col] / resampled[price_col].shift(4)
-                )
-                resampled["ret_24h_1d"] = np.log(
-                    resampled[price_col] / resampled[price_col].shift(24)
-                )
-                resampled["price_z_120h_1d"] = (
-                    resampled[price_col]
-                    - resampled[price_col]
-                    .rolling(window=meta["window"], min_periods=meta["min_periods"])
-                    .mean()
-                ) / resampled[price_col].rolling(
-                    window=meta["window"], min_periods=meta["min_periods"]
-                ).std()
-                resampled["bb_position_1d"] = (
-                    resampled[price_col] - resampled[lower_col]
-                ) / (resampled[upper_col] - resampled[lower_col] + 1e-8)
-                merge_cols = [
-                    "timestamp",
-                    "ret_1d",
-                    "ret_4h_1d",
-                    "ret_24h_1d",
-                    "price_z_120h_1d",
-                    "bb_position_1d",
-                ]
-
-            # Align back to hourly grid for downstream joins
-            local = local.merge(
-                resampled[merge_cols],
-                on="timestamp",
-                how="left",
-            )
-
-        # Clip and fill
-        for col in ["bb_position_1h"] + [c for c in local.columns if c.startswith("bb_position_") and c != "bb_position_1h"]:
-            local[col] = local[col].clip(0, 1)
-        for col in ["price_z_120h"] + [c for c in local.columns if c.startswith("price_z_120h_")]:
-            local[col] = local[col].clip(-5, 5)
-
-        fill_cols = [
-            col
-            for col in local.columns
-            if col.startswith(("ret_", "price_z_120h")) or col.startswith("bb_position")
-        ]
+        fill_cols = ["ret_1h", "ret_4h", "ret_24h", "price_z_120h", "bb_position_1h"]
         local[fill_cols] = local[fill_cols].ffill().bfill()
 
         return local
@@ -312,7 +210,7 @@ def add_golden_price_features(
     else:
         processed = _process_group(df)
 
-    logger.info("Added golden price features across 1h/4h/1d (returns, z-score, Bollinger position).")
+    logger.info("Added golden price features (returns, z-score, Bollinger position).")
     return processed
 
 

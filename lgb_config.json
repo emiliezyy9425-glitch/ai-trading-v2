@@ -1,0 +1,20 @@
+{
+  "data_path": "historical_data_no_price.csv",
+  "target_column": "decision",
+  "num_leaves": 80,
+  "learning_rate": 0.05,
+  "n_estimators": 200,
+  "min_child_samples": 20,
+  "min_data_in_leaf": 20,
+  "subsample": 0.8,
+  "colsample_bytree": 0.8,
+  "random_state": 42,
+  "device": "gpu",
+  "param_grid": {
+    "num_leaves": [31, 50, 100],
+    "learning_rate": [0.01, 0.05, 0.1],
+    "n_estimators": [100, 200, 300],
+    "reg_alpha": [0.0, 0.1, 0.5],
+    "reg_lambda": [0.0, 0.1, 0.5]
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "data_path": "data/historical_data_no_price.csv",
+  "time_steps": 120,
+  "epochs": 120,
+  "batch_size": 64,
+  "learning_rate": 0.0001,
+  "d_model": 384,
+  "nhead": 8,
+  "num_layers": 3,
+  "dim_feedforward": 1536,
+  "dropout": 0.1,
+  "n_trials": 30,
+  "max_training_minutes": 60
+}

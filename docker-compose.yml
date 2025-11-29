@@ -1,0 +1,34 @@
+services:
+  tsla_trading_app:
+    image: tsla-ai-trading-agent-version2
+    container_name: tsla_trading_app_version2
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    environment:
+      - TF_ENABLE_ONEDNN_OPTS=0  # Keep CPU math kernels for determinism if TF falls back
+    volumes:
+      - ./logs:/app/logs
+      - ./models:/app/models
+      - ./data:/app/data
+      - ./.env:/app/.env
+    ports:
+      - "8050:8050"
+    runtime: nvidia
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: no  # Changed from unless-stopped
+    healthcheck:
+      test: ["CMD", "bash", "-c", "ps aux | grep [c]ron > /dev/null && test -f /app/logs/ai_agent.log"]
+      interval: 1m
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    command: ["/bin/bash", "-c", "rm -f /etc/cron.d/self_learn && /app/launch_all.sh"]

@@ -1,0 +1,163 @@
+cd C:\Users\yingl\OneDrive\Desktop\ai-trading-agent-main
+docker-compose down
+docker images
+docker rmi
+docker build --no-cache -t tsla-ai-trading-agent-version2 .
+docker-compose up -d
+docker ps
+ docker logs tsla_trading_app
+docker logs -f tsla_trading_app
+docker exec tsla_trading_app cat /app/logs/test_output.log
+docker exec tsla_trading_app cat /app/logs/ai_agent_output.log
+
+
+#alpaca paper trading
+docker exec tsla_trading_app python /app/python alpaca_paper_trader.py
+
+
+#train model
+docker exec tsla_trading_app ls -l /app/retrain_models.py /app/config/*.json
+
+docker run -d --name tsla_trading_app --gpus all -p 8050:8050 -v //c/Users/yingl/OneDrive/Desktop/ai-trading-agent-main:/app --memory="48g" --memory-swap="48g" tsla-ai-trading-agent
+
+
+docker run -d --name tsla_trading_app_version2 --gpus all --privileged -p 8050:8050 -v //c/Users/yingl/OneDrive/Desktop/ai-trading-agent-main:/app --memory="60g" --memory-swap="60g" tsla-ai-trading-agent-version2
+
+docker-compose up -d --build
+
+
+docker run -d --name tsla_trading_app_version2 --gpus all --privileged -p 8050:8050 -v //c/Users/yingl/OneDrive/Desktop/ai-trading-agent-main:/app -v /etc/OpenCL:/etc/OpenCL:ro --memory="60g" --memory-swap="60g" tsla-ai-trading-agent-version2
+
+docker run -d --name tsla_trading_app_version2 --gpus all --privileged -p 8050:8050 -v //c/Users/yingl/OneDrive/Desktop/ai-trading-agent-main:/app -v /etc/OpenCL:/etc/OpenCL:ro --memory="60g" --memory-swap="60g" --user root tsla-ai-trading-agent-version2
+
+docker exec -it tsla_trading_app_version2 bash
+
+watch -n 1 nvidia-smi
+
+
+python -m scripts.run_training_pipeline
+
+python /app/retrain_models.py --config /app/rf_config.json
+python /app/retrain_models.py --config /app/lgb_config.json
+python /app/retrain_models.py --config /app/xgb_config.json
+
+python /app/retrain_models.py --config /app/ppo_config.json
+
+python /app/retrain_models.py --config /app/transformer_config.json
+python /app/retrain_models.py --config /app/lstm_config.json
+
+
+
+sudo chown -R appuser:appuser /app/data
+
+ python tsla_ai_master_final_ready_backtest.py --ticker TSLQ
+
+
+SMCL
+MSTX
+MSOX
+CONL
+RIOX
+SVXY
+ASMG
+FNGU
+SOXL
+SPXL
+CRWL
+PLTU
+AMZU
+METU
+AAPU
+NVDU
+XPP
+LABU
+ARCX
+AMDL
+APPX
+ARMU
+AVGX
+ORCX
+CRCG
+NVTX
+QSU
+YINN
+YANG
+BLSX
+TNA
+TSLQ
+
+
+python /app/scripts/download_historical_prices.py
+python /app/scripts/compute_historical_indicators.py
+python /app/scripts/generate_historical_data.py
+python /app/clean_historical_data.py
+python /app/add_decision_column.py
+
+#stop training
+docker exec tsla_trading_app pkill -INT -f "python -m scripts.run_training_pipeline"
+
+
+# tranin from backtest
+python self_learn.py --trade-log data/trade_log_backtest.csv
+
+#backtest
+
+
+docker cp tsla_trading_app:/app/logs/trade_report_backtest.txt .
+docker cp tsla_trading_app:/app/logs/trade_log_backtest.csv .
+
+
+#update .env for number of trades and ordersize
+docker cp ./.env tsla_trading_app:/app/.env
+docker-compose restart
+
+
+ #update tickers list
+docker cp ./data/tickers.txt tsla_trading_app:/app/data/tickers.txt
+docker-compose restart
+
+
+
+docker inspect --format '{{.State.Health.Status}}' tsla_trading_app
+docker cp tsla_trading_app:/app/data/historical_data.csv .
+
+docker cp tsla_trading_app:/app/installed_packages.txt .
+docker exec tsla_trading_app cat /app/.env
+docker-compose restart
+
+docker inspect -f '{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}' tsla_trading_app.
+
+
+#requirement.txt changes
+docker build -f Dockerfile.dependencies -t myapp-dependencies:latest .
+docker-compose build
+docker-compose up -d
+
+#For code changes only
+docker-compose up -d --build
+
+
+
+zyyzyy123
+
+Wllwll12!
+
+docker exec -it tsla_trading_app python -c "from ib_insync import IB; ib = IB(); ib.connect('host.docker.internal', 7497, clientId=1); print(ib.isConnected())"
+
+
+172.18.0.2:8050
+
+
+docker pull nvcr.io/nvidia/tensorflow:25.02-tf2-py3
+
+docker run --gpus all -it `
+  --name tsla_trading_app_new `
+  -v "C:\Users\yingl\OneDrive\Desktop\ai-trading-agent-main:/app" `
+  nvcr.io/nvidia/tensorflow:25.02-tf2-py3 bash
+
+
+# Install any missing Python packages (if you have a requirements.txt)
+pip install -r /app/requirements.txt
+
+# Run the training script
+python /app/retrain_models.py --config /app/lstm_config.json

@@ -1,0 +1,23 @@
+# Environment files
+.env
+
+# Python cache and temporary files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Logs and temporary data
+*.log
+*.txt
+
+# Docker and virtual environment files
+Dockerfile.*
+.dockerignore
+venv/
+.envrc
+
+# Build artifacts
+build/
+dist/
+*.egg-info/

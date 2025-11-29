@@ -10,10 +10,7 @@ os.makedirs("logs", exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        logging.FileHandler("logs/ppo.log"),
-        logging.StreamHandler()
-    ]
+    handlers=[logging.FileHandler("logs/ppo.log"), logging.StreamHandler()],
 )
 logger = logging.getLogger(__name__)
 
@@ -40,17 +37,19 @@ class TradingEnv(gym.Env):
         self.previous_value = self.initial_balance
         self.returns = []
 
-        self.observation_space = spaces.Box(low=-10, high=10, shape=(len(FEATURE_NAMES),), dtype=np.float32)
+        self.observation_space = spaces.Box(
+            low=-10, high=10, shape=(len(FEATURE_NAMES),), dtype=np.float32
+        )
         self.action_space = spaces.Discrete(3)  # 0=Buy, 1=Sell, 2=Hold
 
     def _get_price(self):
         """Reconstruct price from cumulative log returns — mathematically perfect"""
-        cum_ret = self.data["ret_1h"].iloc[:self.current_step+1].sum()
+        cum_ret = self.data["ret_1h"].iloc[: self.current_step + 1].sum()
         return np.exp(cum_ret) * 100.0
 
     def _get_observation(self):
         row = self.data.iloc[self.current_step]
-        return row.reindex(FEATURE_NAMES).fillna(0.0).values.astype(np.float32)
+        return row.reindex(FEATURE_NAMES).fillna(0.0).astype(np.float32).values
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
@@ -66,15 +65,25 @@ class TradingEnv(gym.Env):
     def _update_portfolio(self, price):
         shares = self.position * self.position_size
         self.portfolio_value = self.cash + shares * price
+        # CRITICAL: NEVER LET previous_value BE ZERO OR NEGATIVE
+        if self.portfolio_value <= 0:
+            self.portfolio_value = 1e-8
 
     def _calculate_reward(self):
-        if self.previous_value <= 0:
-            self.previous_value = 1e-8
-        log_ret = np.log(self.portfolio_value / self.previous_value)
+        # This is now 100% safe — no log(0) possible
+        current = max(self.portfolio_value, 1e-8)
+        prev = max(self.previous_value, 1e-8)
+        log_ret = np.log(current / prev)
 
-        market_ret = self.data["ret_1h"].iloc[self.current_step] if self.current_step < len(self.data) else 0.0
-        in_right_direction = (self.position == 1 and market_ret > 0) or (self.position == -1 and market_ret < 0)
-        direction_bonus = 1.0 if in_right_direction else 0.85
+        market_ret = (
+            self.data["ret_1h"].iloc[self.current_step]
+            if self.current_step < len(self.data)
+            else 0.0
+        )
+        right_direction = (self.position == 1 and market_ret > 0) or (
+            self.position == -1 and market_ret < 0
+        )
+        direction_bonus = 1.0 if right_direction else 0.9
 
         if len(self.returns) >= 20:
             sharpe = np.mean(self.returns) / (np.std(self.returns) + 1e-8)
@@ -82,8 +91,7 @@ class TradingEnv(gym.Env):
         else:
             reward = log_ret * 80
 
-        reward = np.clip(reward, -3.0, 3.0)
-        return float(reward * direction_bonus)
+        return float(np.clip(reward * direction_bonus, -3.0, 3.0))
 
     def step(self, action):
         price = self._get_price()

@@ -107,15 +107,48 @@ def run_backtest(
         merged.index = pd.to_datetime(merged.index, utc=True)
         return merged.sort_index()
 
+    def _download_missing_bars_from_ibkr() -> pd.DataFrame:
+        """Connect to IBKR and download historical bars when local data is missing."""
+
+        try:
+            ib = live_trading.connect_ibkr(max_retries=1)
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logger.warning("IBKR connection attempt failed: %s", exc)
+            return pd.DataFrame()
+
+        if ib is None:
+            logger.warning("IBKR connection unavailable; cannot download price history.")
+            return pd.DataFrame()
+
+        try:
+            logger.info(
+                "Attempting IBKR download for %s (%s) because curated/raw data is missing...",
+                ticker,
+                timeframe,
+            )
+            df = live_trading.get_historical_data(ib, ticker, timeframe)
+            return df if df is not None else pd.DataFrame()
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logger.error("Failed to download IBKR history for %s (%s): %s", ticker, timeframe, exc)
+            return pd.DataFrame()
+        finally:
+            try:
+                ib.disconnect()
+            except Exception:
+                pass
+
     # Load curated bars first (matches live trading); fall back to locally stored raw prices
     df = live_trading.load_curated_bars(ticker, timeframe)
     if df.empty:
         logger.info("Curated data missing; attempting to use locally stored raw price bars instead.")
         df = _load_raw_bars_from_disk()
     if df.empty:
+        df = _download_missing_bars_from_ibkr()
+    if df.empty:
         raise FileNotFoundError(
-            "No curated or raw price data found. "
-            "Place raw bars under data/lake/raw/<TICKER>/<timeframe_with_underscores>/"
+            "No curated, raw, or IBKR-downloaded price data found. "
+            "Ensure IBKR is reachable or place raw bars under "
+            "data/lake/raw/<TICKER>/<timeframe_with_underscores>/"
         )
 
     position: Position | None = None

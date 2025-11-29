@@ -23,17 +23,17 @@ class TradingEnv(gym.Env):
 
     def __init__(self, data=None):
         super().__init__()
-        if data is None:
-            raise ValueError("Data required")
+        if data is None or "ret_1h" not in data.columns:
+            raise ValueError("Data with 'ret_1h' required")
         self.data = data.reset_index(drop=True)
-        logger.info(f"PPO Env loaded with {len(self.data)} rows")
+        logger.info(f"PPO Env: {len(self.data)} rows")
 
         self.current_step = 0
         self.max_steps = len(self.data) - 1
         self.initial_balance = 100_000.0
         self.cash = self.initial_balance
-        self.position = 0
-        self.entry_price = 0.0
+        self.position = 0  # -1, 0, +1
+        self.entry_price = 100.0
         self.position_size = 100
         self.transaction_cost = 0.001
         self.portfolio_value = self.initial_balance
@@ -45,22 +45,19 @@ class TradingEnv(gym.Env):
 
     def _get_price(self):
         """Reconstruct price from cumulative log returns — mathematically perfect"""
-        if "ret_1h" not in self.data.columns:
-            return 100.0
         cum_ret = self.data["ret_1h"].iloc[:self.current_step+1].sum()
-        return np.exp(cum_ret) * 100.0  # start from $100
+        return np.exp(cum_ret) * 100.0
 
     def _get_observation(self):
         row = self.data.iloc[self.current_step]
-        row_filled = row.reindex(FEATURE_NAMES).fillna(0.0)
-        return row_filled.values.astype(np.float32)
+        return row.reindex(FEATURE_NAMES).fillna(0.0).values.astype(np.float32)
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         self.current_step = 200
         self.cash = self.initial_balance
         self.position = 0
-        self.entry_price = 0.0
+        self.entry_price = 100.0
         self.portfolio_value = self.initial_balance
         self.previous_value = self.initial_balance
         self.returns = []
@@ -71,54 +68,50 @@ class TradingEnv(gym.Env):
         self.portfolio_value = self.cash + shares * price
 
     def _calculate_reward(self):
-        """Ultra-stable log-return reward — handles zero/negative portfolio gracefully"""
-        if self.previous_value <= 1e-8:
-            self.previous_value = 1e-8  # prevent log(0)
-        log_return = np.log(self.portfolio_value / self.previous_value)
+        if self.previous_value <= 0:
+            self.previous_value = 1e-8
+        log_ret = np.log(self.portfolio_value / self.previous_value)
 
-        market_move = self.data["ret_1h"].iloc[self.current_step] if self.current_step < len(self.data) else 0.0
-        direction_bonus = 1.0 if (self.position == 1 and market_move > 0) or (self.position == -1 and market_move < 0) else 0.9
+        market_ret = self.data["ret_1h"].iloc[self.current_step] if self.current_step < len(self.data) else 0.0
+        in_right_direction = (self.position == 1 and market_ret > 0) or (self.position == -1 and market_ret < 0)
+        direction_bonus = 1.0 if in_right_direction else 0.85
 
         if len(self.returns) >= 20:
-            mean_ret = np.mean(self.returns)
-            std_ret = np.std(self.returns) + 1e-8
-            sharpe = mean_ret / std_ret
-            reward = log_return * 60 + sharpe * 3
+            sharpe = np.mean(self.returns) / (np.std(self.returns) + 1e-8)
+            reward = log_ret * 80 + sharpe * 4
         else:
-            reward = log_return * 60
+            reward = log_ret * 80
 
-        # Clamp reward to prevent any nan/inf
-        reward = np.clip(reward, -5.0, 5.0)
-
+        reward = np.clip(reward, -3.0, 3.0)
         return float(reward * direction_bonus)
 
     def step(self, action):
-        current_price = self._get_price()
+        price = self._get_price()
 
         if action == 0 and self.position != 1:  # Buy
-            cost = self.position_size * current_price * (1 + self.transaction_cost)
-            if self.position == -1:
-                profit = self.position_size * (self.entry_price - current_price)
+            cost = self.position_size * price * (1 + self.transaction_cost)
+            if self.position == -1:  # close short first
+                profit = self.position_size * (self.entry_price - price)
                 self.cash += profit * (1 - self.transaction_cost)
             if self.cash >= cost:
                 self.cash -= cost
                 self.position = 1
-                self.entry_price = current_price
+                self.entry_price = price
 
         elif action == 1 and self.position != -1:  # Sell
-            proceeds = self.position_size * current_price * (1 - self.transaction_cost)
-            if self.position == 1:
-                profit = self.position_size * (current_price - self.entry_price)
+            proceeds = self.position_size * price * (1 - self.transaction_cost)
+            if self.position == 1:  # close long first
+                profit = self.position_size * (price - self.entry_price)
                 self.cash += profit * (1 - self.transaction_cost)
             self.cash += proceeds
             self.position = -1
-            self.entry_price = current_price
+            self.entry_price = price
 
-        self._update_portfolio(current_price)
+        self._update_portfolio(price)
         reward = self._calculate_reward()
 
-        pct = (self.portfolio_value - self.previous_value) / (self.previous_value or 1)
-        self.returns.append(pct)
+        pct_change = (self.portfolio_value - self.previous_value) / (self.previous_value + 1e-8)
+        self.returns.append(pct_change)
         if len(self.returns) > 100:
             self.returns.pop(0)
 
@@ -126,12 +119,12 @@ class TradingEnv(gym.Env):
         self.current_step += 1
 
         done = self.current_step >= self.max_steps
-        obs = self._get_observation() if not done else np.zeros(len(FEATURE_NAMES))
+        obs = self._get_observation() if not done else np.zeros(len(FEATURE_NAMES), dtype=np.float32)
 
         info = {
             "portfolio_value": self.portfolio_value,
             "position": self.position,
-            "price": current_price
+            "price": price
         }
 
         return obs, reward, done, False, info

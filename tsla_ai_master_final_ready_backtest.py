@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
+import numpy as np
 
 # === EXACT SAME IMPORTS AS LIVE TRADING ===
 import tsla_ai_master_final_ready as live_trading
@@ -186,7 +187,13 @@ def run_backtest(
             logger.warning(f"Indicator build failed at {now}: {e}")
             continue
 
-        price = indicators["price"][timeframe]
+        # === PRICE RECONSTRUCTION (price-free system) ===
+        if "ret_1h" in df.columns:
+            cum_ret = df["ret_1h"].iloc[:bar_idx + 1].sum()
+            price = round(float(np.exp(cum_ret) * 100.0), 4)
+        else:
+            price = 100.0
+        # ================================================
         iv = indicators.get("iv", 50.0)
         delta = indicators.get("delta", 0.5)
         sp500_pct = indicators.get("sp500_above_20d", 50.0)
@@ -267,7 +274,7 @@ def run_backtest(
         write_trade_csv({
             "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
             "ticker": ticker,
-            "price": round(price, 3),
+            "price": round(price, 4),
             "price_1h": _price_value("1 hour"),
             "price_4h": _price_value("4 hours"),
             "price_1d": _price_value("1 day"),

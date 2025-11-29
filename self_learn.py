@@ -67,6 +67,12 @@ FEATURE_NAMES_1H: List[str] = [
     "obv_1h",
     "stoch_k_1h",
     "stoch_d_1h",
+    # Golden price derivatives (retain order with 1h context)
+    "ret_1h",
+    "ret_4h",
+    "ret_24h",
+    "price_z_120h",
+    "bb_position_1h",
 ]
 
 FEATURE_NAMES_4H: List[str] = [
@@ -89,6 +95,11 @@ FEATURE_NAMES_4H: List[str] = [
     "obv_4h",
     "stoch_k_4h",
     "stoch_d_4h",
+    # Golden price derivatives at 4h cadence
+    "ret_4h_4h",
+    "ret_24h_4h",
+    "price_z_120h_4h",
+    "bb_position_4h",
 ]
 
 FEATURE_NAMES_1D: List[str] = [
@@ -109,6 +120,12 @@ FEATURE_NAMES_1D: List[str] = [
     "obv_1d",
     "stoch_k_1d",
     "stoch_d_1d",
+    # Golden price derivatives at 1d cadence
+    "ret_1d",
+    "ret_4h_1d",
+    "ret_24h_1d",
+    "price_z_120h_1d",
+    "bb_position_1d",
 ]
 
 _PATTERN_BASES: List[str] = [

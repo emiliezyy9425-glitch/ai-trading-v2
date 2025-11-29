@@ -126,11 +126,21 @@ _PATTERN_TIMEFRAMES: List[str] = ["1h", "4h", "1d"]
 
 CANDLESTICK_FEATURES: List[str] = [
     f"{base}_{tf}"
-    for tf in _PATTERN_TIMEFRAMES
     for base in _PATTERN_BASES
+    for tf in _PATTERN_TIMEFRAMES
 ]
 
-ADDITIONAL_FEATURES: List[str] = ["sp500_above_20d"]
+ADDITIONAL_FEATURES: List[str] = [
+    "iv",
+    "delta",
+    "delta_atm_call",
+    "delta_atm_put",
+    "iv_atm",
+    "iv_rank_proxy",
+    "sp500_above_20d",
+    "spx_above_20d",
+    "vix",
+]
 
 # Full list for RF, PPO, ensemble
 FEATURE_NAMES: List[str] = (

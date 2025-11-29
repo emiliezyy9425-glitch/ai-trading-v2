@@ -21,40 +21,121 @@ import joblib
 # FEATURE NAMES — AUTO-GENERATED FROM CSV
 # ================================
 
-# Base feature names (without suffix)
+# Base feature names (without suffix) used by derived helpers
 _BASE_FEATURES: List[str] = [
-    # Core Technicals
-    "rsi", "macd", "signal", "ema10", "ema10_dev",
-    "rsi_change", "macd_change", "ema10_change",
-    "price_above_ema10", "bb_upper", "bb_lower", "bb_mid",
-    "volume", "tds_trend", "tds_signal", "high_vol", "vol_spike",
-    "td9", "zig", "vol_cat",
-
-    # Fibonacci
-    "fib_level1", "fib_level2", "fib_level3", "fib_level4", "fib_level5", "fib_level6",
-    "fib_time_count", "fib_zone_delta",
-
-    # Volatility & Trend
-    "atr", "adx", "obv", "stoch_k", "stoch_d",
+    "rsi",
+    "macd",
+    "signal",
+    "ema10",
+    "ema10_dev",
+    "rsi_change",
+    "macd_change",
+    "ema10_change",
+    "price_above_ema10",
+    "bb_upper",
+    "bb_lower",
+    "bb_mid",
+    "volume",
+    "td9",
+    "zig",
+    "atr",
+    "adx",
+    "obv",
+    "stoch_k",
+    "stoch_d",
 ]
 
-# Multi-timeframe versions
-def _make_suffixed(names: List[str], suffix: str) -> List[str]:
-    return [f"{name}_{suffix}" for name in names]
+# Explicit per-timeframe feature schema (order matters for model compatibility)
+FEATURE_NAMES_1H: List[str] = [
+    "rsi_1h",
+    "macd_1h",
+    "signal_1h",
+    "ema10_1h",
+    "ema10_dev_1h",
+    "rsi_change_1h",
+    "macd_change_1h",
+    "ema10_change_1h",
+    "price_above_ema10_1h",
+    "bb_upper_1h",
+    "bb_lower_1h",
+    "bb_mid_1h",
+    "volume_1h",
+    "td9_1h",
+    "zig_1h",
+    "atr_1h",
+    "adx_1h",
+    "obv_1h",
+    "stoch_k_1h",
+    "stoch_d_1h",
+    # Golden price derivatives (retain order with 1h context)
+    "ret_1h",
+    "ret_4h",
+    "ret_24h",
+    "price_z_120h",
+    "bb_position_1h",
+]
 
-FEATURE_NAMES_1H: List[str] = _make_suffixed(_BASE_FEATURES, "1h")
-FEATURE_NAMES_4H: List[str] = _make_suffixed(_BASE_FEATURES, "4h")
-FEATURE_NAMES_1D: List[str] = _make_suffixed(_BASE_FEATURES, "1d")
+FEATURE_NAMES_4H: List[str] = [
+    "rsi_4h",
+    "macd_4h",
+    "signal_4h",
+    "ema10_4h",
+    "ema10_dev_4h",
+    "macd_change_4h",
+    "ema10_change_4h",
+    "price_above_ema10_4h",
+    "bb_upper_4h",
+    "bb_lower_4h",
+    "bb_mid_4h",
+    "volume_4h",
+    "td9_4h",
+    "zig_4h",
+    "atr_4h",
+    "adx_4h",
+    "obv_4h",
+    "stoch_k_4h",
+    "stoch_d_4h",
+    # Golden price derivatives at 4h cadence
+    "ret_4h",
+    "ret_4h_4h",
+    "ret_24h_4h",
+    "price_z_120h_4h",
+    "bb_position_4h",
+]
 
-# self_learn.py → FINAL FEATURE_NAMES (candlestick part only)
+FEATURE_NAMES_1D: List[str] = [
+    "macd_1d",
+    "signal_1d",
+    "ema10_1d",
+    "ema10_dev_1d",
+    "macd_change_1d",
+    "ema10_change_1d",
+    "price_above_ema10_1d",
+    "bb_upper_1d",
+    "bb_lower_1d",
+    "bb_mid_1d",
+    "volume_1d",
+    "td9_1d",
+    "zig_1d",
+    "atr_1d",
+    "obv_1d",
+    "stoch_k_1d",
+    "stoch_d_1d",
+    # Golden price derivatives at 1d cadence
+    "ret_1d",
+    "ret_4h_1d",
+    "ret_24h_1d",
+    "price_z_120h_1d",
+    "bb_position_1d",
+]
+
 _PATTERN_BASES: List[str] = [
     "pattern_bullish_engulfing",
     "pattern_bearish_engulfing",
-    "pattern_marubozu_bull",
-    "pattern_marubozu_bear",
-    # Newly added to align live features with trained models/scalers
     "pattern_hammer",
     "pattern_shooting_star",
+    "pattern_marubozu_bull",
+    "pattern_marubozu_bear",
     "pattern_morning_star",
     "pattern_evening_star",
 ]
@@ -63,22 +144,11 @@ _PATTERN_TIMEFRAMES: List[str] = ["1h", "4h", "1d"]
 
 CANDLESTICK_FEATURES: List[str] = [
     f"{base}_{tf}"
-    for base in _PATTERN_BASES
     for tf in _PATTERN_TIMEFRAMES
+    for base in _PATTERN_BASES
 ]
 
-ADDITIONAL_FEATURES: List[str] = [
-    "iv",
-    "delta",
-    "sp500_above_20d",
-    "level_weight",
-    "iv_atm",
-    "delta_atm_call",
-    "delta_atm_put",
-    "spx_above_20d",
-    "vix",
-    "iv_rank_proxy",
-]
+ADDITIONAL_FEATURES: List[str] = ["sp500_above_20d"]
 
 # Full list for RF, PPO, ensemble
 FEATURE_NAMES: List[str] = (

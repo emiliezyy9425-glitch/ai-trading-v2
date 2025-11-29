@@ -4,9 +4,9 @@
     "model_path": "models/ppo.zip",
     "output_model_path": "models/updated_ppo.zip",
     "model_type": "PPO",
-    "ppo_timesteps": 40000,
+    "ppo_timesteps": 50000,
     "learning_rate": 0.0003,
-    "batch_size": 64,
+    "batch_size": 128,
     "n_steps": 2048,
     "clip_range": 0.2,
     "preprocessing": {

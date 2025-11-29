@@ -9,6 +9,7 @@ import os
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pandas as pd
 
@@ -76,19 +77,51 @@ def run_backtest(
 
     logger.info(f"Starting EXACT-MATCH backtest: {ticker} | {start_date} → {end_date} | {timeframe}")
 
-    # Verify curated data exists (this is what live uses)
-    parquet_path = os.path.join(PROJECT_ROOT, "data", "lake", "curated", f"{ticker}_{timeframe.replace(' ', '')}.parquet")
-    if not os.path.exists(parquet_path):
+    def _load_raw_bars_from_disk() -> pd.DataFrame:
+        raw_dir = Path(PROJECT_ROOT) / "data" / "lake" / "raw" / ticker / timeframe.replace(" ", "_")
+        if not raw_dir.is_dir():
+            return pd.DataFrame()
+
+        frames: list[pd.DataFrame] = []
+        for path in sorted(raw_dir.glob("*.parquet")):
+            try:
+                df = pd.read_parquet(path)
+                df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce", utc=True)
+                frames.append(df.set_index("timestamp"))
+            except Exception as exc:
+                logger.warning(f"Failed to load raw parquet {path}: {exc}")
+
+        for path in sorted(raw_dir.glob("*.csv")):
+            try:
+                frames.append(
+                    pd.read_csv(path, parse_dates=["timestamp"], index_col="timestamp")
+                )
+            except Exception as exc:
+                logger.warning(f"Failed to load raw CSV {path}: {exc}")
+
+        if not frames:
+            return pd.DataFrame()
+
+        merged = pd.concat(frames)
+        merged = merged[~merged.index.duplicated(keep="last")]
+        merged.index = pd.to_datetime(merged.index, utc=True)
+        return merged.sort_index()
+
+    # Load curated bars first (matches live trading); fall back to locally stored raw prices
+    df = live_trading.load_curated_bars(ticker, timeframe)
+    if df.empty:
+        logger.info("Curated data missing; attempting to use locally stored raw price bars instead.")
+        df = _load_raw_bars_from_disk()
+    if df.empty:
         raise FileNotFoundError(
-            f"Real curated data missing: {parquet_path}\n"
-            "Run: python /app/scripts/compute_historical_indicators.py --ticker TSLA --years 3"
+            "No curated or raw price data found. "
+            "Place raw bars under data/lake/raw/<TICKER>/<timeframe_with_underscores>/"
         )
 
     position: Position | None = None
     equity_curve = []
 
-    # Load full history once
-    df = pd.read_parquet(parquet_path)
+    # Trim to the requested window
     df = df[(df.index >= start_dt) & (df.index < end_dt)].sort_index()
 
     if df.empty:

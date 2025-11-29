@@ -71,21 +71,24 @@ class TradingEnv(gym.Env):
         self.portfolio_value = self.cash + shares * price
 
     def _calculate_reward(self):
-        """Log-return-based reward — stable and scale-invariant"""
-        if self.previous_value <= 0:
-            return 0.0
-        # Use log portfolio growth (same scale as ret_1h)
+        """Ultra-stable log-return reward — handles zero/negative portfolio gracefully"""
+        if self.previous_value <= 1e-8:
+            self.previous_value = 1e-8  # prevent log(0)
         log_return = np.log(self.portfolio_value / self.previous_value)
-        # Bonus for being in the market during up moves
-        market_move = self.data["ret_1h"].iloc[self.current_step] if self.current_step < len(self.data) else 0
-        direction_bonus = 1.0 if (self.position == 1 and market_move > 0) or (self.position == -1 and market_move < 0) else 0.8
 
-        # Sharpe-like smoothing
-        if len(self.returns) > 20:
-            sharpe = np.mean(self.returns) / (np.std(self.returns) + 1e-6)
-            reward = log_return * 50 + sharpe * 2
+        market_move = self.data["ret_1h"].iloc[self.current_step] if self.current_step < len(self.data) else 0.0
+        direction_bonus = 1.0 if (self.position == 1 and market_move > 0) or (self.position == -1 and market_move < 0) else 0.9
+
+        if len(self.returns) >= 20:
+            mean_ret = np.mean(self.returns)
+            std_ret = np.std(self.returns) + 1e-8
+            sharpe = mean_ret / std_ret
+            reward = log_return * 60 + sharpe * 3
         else:
-            reward = log_return * 50
+            reward = log_return * 60
+
+        # Clamp reward to prevent any nan/inf
+        reward = np.clip(reward, -5.0, 5.0)
 
         return float(reward * direction_bonus)
 

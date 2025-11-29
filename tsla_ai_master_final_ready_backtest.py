@@ -176,11 +176,35 @@ def run_backtest(
         ppo_v, ppo_c = get_vote_conf("PPO")
         trans_v, trans_c = get_vote_conf("Transformer")
 
+        price_map = indicators.get("price", {})
+
+        def _price_value(key: str) -> float | str:
+            val = price_map.get(key)
+            try:
+                return round(float(val), 3)
+            except (TypeError, ValueError):
+                return ""
+
+        def _serialize_feature_value(val):
+            if pd.isna(val):
+                return ""
+            if isinstance(val, (float, int, bool, str)):
+                return val
+            try:
+                return float(val)
+            except Exception:
+                return str(val)
+
+        feature_logs = {f"feature_{k}": _serialize_feature_value(v) for k, v in features.items()}
+
         # Write full audit trail
         write_trade_csv({
             "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
             "ticker": ticker,
             "price": round(price, 3),
+            "price_1h": _price_value("1 hour"),
+            "price_4h": _price_value("4 hours"),
+            "price_1d": _price_value("1 day"),
             "decision": decision.upper(),
             "result": result,
             "pnl": round(pnl, 3),
@@ -205,6 +229,7 @@ def run_backtest(
             "macd": round(indicators["macd"].get(timeframe, 0), 4),
             "volume": int(indicators["volume"].get(timeframe, 0)),
             "iv": round(iv, 2),
+            **feature_logs,
         })
 
     # Final stats

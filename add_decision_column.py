@@ -13,7 +13,7 @@ from feature_engineering import (
     encode_vol_cat,
     encode_zig,
 )
-from self_learn import FEATURE_NAMES  # 91 features (no raw prices)
+from self_learn import FEATURE_NAMES  # Canonical model feature set (no raw prices)
 
 from csv_utils import save_dataframe_with_timestamp_validation
 from project_paths import resolve_data_path

@@ -124,6 +124,26 @@ FEATURE_NAMES: List[str] = (
     + ["ret_1h", "ret_4h", "ret_24h", "bb_position_1h"]
 )
 
+# Base indicators (without timeframe suffix) used when assembling multi-timeframe
+# feature rows in utilities such as ``timeframe_predictions``. The suffix is
+# appended dynamically (e.g., ``rsi`` → ``rsi_1h``/``rsi_4h``/``rsi_1d``) to match
+# the training schema above.
+_BASE_FEATURES: List[str] = [
+    "rsi",
+    "macd",
+    "signal",
+    "ema10_dev",
+    "rsi_change",
+    "macd_change",
+    "ema10_change",
+    "price_above_ema10",
+    "td9",
+    "zig",
+    "adx",
+    "stoch_k",
+    "stoch_d",
+]
+
 # ================================
 # PATHS
 # ================================

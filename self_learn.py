@@ -67,12 +67,6 @@ FEATURE_NAMES_1H: List[str] = [
     "obv_1h",
     "stoch_k_1h",
     "stoch_d_1h",
-    # Golden price derivatives (retain order with 1h context)
-    "ret_1h",
-    "ret_4h",
-    "ret_24h",
-    "price_z_120h",
-    "bb_position_1h",
 ]
 
 FEATURE_NAMES_4H: List[str] = [

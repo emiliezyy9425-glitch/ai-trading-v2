@@ -6,17 +6,15 @@ import argparse
 import csv
 import logging
 import os
+from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 
 # === EXACT SAME IMPORTS AS LIVE TRADING ===
-from tsla_ai_master_final_ready import (
-    get_multi_timeframe_indicators,
-    build_feature_row,
-    is_us_equity_session_open,
-)
+import tsla_ai_master_final_ready as live_trading
+from tsla_ai_master_final_ready import build_feature_row, is_us_equity_session_open
 from ml_predictor import predict_with_all_models, ensemble_vote
 from indicators import summarize_td_sequential
 
@@ -36,6 +34,22 @@ BACKTEST_TRADE_LOG_PATH = os.path.join(DATA_DIR, "trade_log_backtest.csv")
 class Position:
     entry_price: float
     timestamp: datetime
+
+
+@contextmanager
+def _backtest_time_alignment(reference: datetime):
+    """Align live trading timestamp helpers to the simulated bar time."""
+
+    original = live_trading._last_completed_bar_timestamp
+
+    def _patched(timeframe: str = "1 hour", ref: datetime | None = None) -> datetime:
+        return original(timeframe, reference)
+
+    live_trading._last_completed_bar_timestamp = _patched
+    try:
+        yield
+    finally:
+        live_trading._last_completed_bar_timestamp = original
 
 
 def write_trade_csv(row: dict):
@@ -83,15 +97,25 @@ def run_backtest(
 
     logger.info(f"Loaded {len(df)} bars. Running bar-by-bar...")
 
+    def _timeframe_delta(tf: str) -> timedelta:
+        tf = tf.strip().lower()
+        if tf in {"1 day", "1d", "daily"}:
+            return timedelta(days=1)
+        if tf in {"4 hours", "4h"}:
+            return timedelta(hours=4)
+        return timedelta(hours=1)
+
     for ts, _ in df.iterrows():
         now = ts.to_pydatetime()
+        reference = now + _timeframe_delta(timeframe)
 
         # Only trade during US equity session (same as live)
         if not is_us_equity_session_open(now):
             continue
 
         try:
-            indicators = get_multi_timeframe_indicators(ticker, now)
+            with _backtest_time_alignment(reference):
+                indicators = live_trading.get_multi_timeframe_indicators(None, ticker)
         except Exception as e:
             logger.warning(f"Indicator build failed at {now}: {e}")
             continue

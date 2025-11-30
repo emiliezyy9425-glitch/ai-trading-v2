@@ -30,7 +30,8 @@ MODEL_DIR = PROJECT_ROOT / "models"
 LOG_DIR = PROJECT_ROOT / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 
-# Minimum confidence required for each model to trigger a trade
+# Minimum confidence required for each model to trigger a trade (legacy thresholds
+# kept for backward compatibility; the live ensemble below uses ENSEMBLE_THRESHOLDS).
 MODEL_CONFIDENCE_THRESHOLDS: dict[str, float] = {
     "RandomForest": 0.80,
     "XGBoost": 0.78,
@@ -42,6 +43,16 @@ MODEL_CONFIDENCE_THRESHOLDS: dict[str, float] = {
 
 # Confidence threshold that forces a hold when high-confidence models disagree
 HIGH_CONFIDENCE_DISAGREEMENT_THRESHOLD = 0.98
+
+# Live-trading ensemble thresholds (battle-tested May–Nov 2025)
+ENSEMBLE_THRESHOLDS: dict[str, float] = {
+    "rf": 0.825,
+    "xgb": 0.945,
+    "lgb": 0.825,
+    "lstm": 0.99,
+    "transformer": 0.985,
+    "ppo": 0.80,
+}
 
 
 def _resolve_scaler_path() -> Optional[Path]:
@@ -677,17 +688,256 @@ def predict_with_all_models(df: pd.DataFrame, seq_len: int = 60) -> Dict[str, Tu
     return results
 
 
+def _extract_vote_and_confidence(probs: np.ndarray) -> Tuple[Optional[str], float]:
+    """Return vote (Buy/Sell/Hold) and confidence from probability array."""
+
+    if probs.size == 0:
+        return None, 0.0
+
+    finite = np.asarray(probs, dtype=float)
+    finite = finite[np.isfinite(finite)]
+    if finite.size == 0:
+        return None, 0.0
+
+    non_zero = finite[finite != 0]
+    effective = non_zero if non_zero.size else finite
+
+    prob = float(effective.mean())
+    if prob > 0.5:
+        return "Buy", prob
+    if prob < 0.5:
+        return "Sell", 1 - prob
+    return "Hold", 0.5
+
+
+def _get_row_value(row: Mapping, key: str, default=None):
+    if hasattr(row, "get"):
+        return row.get(key, default)
+    try:
+        return row[key]
+    except Exception:
+        return default
+
+
+def get_ensemble_signal(row):
+    votes = []
+    confs = {}
+
+    if (_get_row_value(row, "rf_conf", 0.0) >= ENSEMBLE_THRESHOLDS["rf"]):
+        vote = _get_row_value(row, "rf_vote")
+        if vote:
+            votes.append(vote)
+            confs["rf"] = _get_row_value(row, "rf_conf", 0.0)
+
+    if (_get_row_value(row, "xgb_conf", 0.0) >= ENSEMBLE_THRESHOLDS["xgb"]):
+        vote = _get_row_value(row, "xgb_vote")
+        if vote:
+            votes.append(vote)
+            confs["xgb"] = _get_row_value(row, "xgb_conf", 0.0)
+
+    if (_get_row_value(row, "lgb_conf", 0.0) >= ENSEMBLE_THRESHOLDS["lgb"]):
+        vote = _get_row_value(row, "lgb_vote")
+        if vote:
+            votes.append(vote)
+            confs["lgb"] = _get_row_value(row, "lgb_conf", 0.0)
+
+    if (_get_row_value(row, "lstm_conf", 0.0) >= ENSEMBLE_THRESHOLDS["lstm"]):
+        vote = _get_row_value(row, "lstm_vote")
+        if vote:
+            votes.append(vote)
+            confs["lstm"] = _get_row_value(row, "lstm_conf", 0.0)
+
+    if (_get_row_value(row, "transformer_conf", 0.0) >= ENSEMBLE_THRESHOLDS["transformer"]):
+        vote = _get_row_value(row, "transformer_vote")
+        if vote:
+            votes.append(vote)
+            confs["transformer"] = _get_row_value(row, "transformer_conf", 0.0)
+
+    if len(votes) < 3:
+        return "HOLD", 0.0, votes, confs
+
+    buy_count = votes.count("Buy")
+    sell_count = votes.count("Sell")
+    majority = "Buy" if buy_count > sell_count else "Sell" if sell_count > buy_count else "HOLD"
+
+    if majority == "HOLD":
+        return "HOLD", 0.0, votes, confs
+
+    nuclear_ok = False
+    if (
+        ("xgb" in confs and confs["xgb"] >= 0.94 and _get_row_value(row, "xgb_vote") == majority)
+        or ("lstm" in confs and confs["lstm"] >= 0.99 and _get_row_value(row, "lstm_vote") == majority)
+    ):
+        nuclear_ok = True
+
+    if not nuclear_ok:
+        return "HOLD", 0.0, votes, confs
+
+    avg_conf = np.mean([confs[k] for k, v in confs.items() if _get_row_value(row, f"{k}_vote") == majority])
+    return majority, float(avg_conf), votes, confs
+
+
+def get_position_size_and_actions(row, prev_row, current_signal, current_position):
+    if pd.isna(_get_row_value(row, "ppo_action", np.nan)) or current_signal == "HOLD":
+        return 1.0, False, False
+
+    action = int(_get_row_value(row, "ppo_action", 1))
+    value = _get_row_value(row, "ppo_value", 0)
+    entropy = _get_row_value(row, "ppo_entropy", 0.3)
+
+    value_ma = _get_row_value(row, "ppo_value_ma100", value)
+    value_std = _get_row_value(row, "ppo_value_std100", 0.5)
+
+    allow_pyramid = False
+    early_exit = False
+    target_size = 1.0
+
+    if action == 2 and value > value_ma + 0.5 * value_std and entropy < 0.4:
+        allow_pyramid = True
+        target_size = 1.75
+
+    if action == 0 or entropy > 0.60:
+        early_exit = True
+
+    if current_position != 0 and action == 0 and _get_row_value(prev_row, "ppo_action", 1) == 2:
+        early_exit = True
+
+    return target_size, allow_pyramid, early_exit
+
+
+def _build_live_row(predictions: Dict[str, Tuple[np.ndarray, np.ndarray]], ppo_metadata: Optional[Mapping]) -> Tuple[dict, dict]:
+    detail = {
+        "votes": {},
+        "confidences": {},
+        "qualified": [],
+        "missing": {},
+    }
+    row: dict = {}
+
+    model_map = {
+        "RandomForest": "rf",
+        "XGBoost": "xgb",
+        "LightGBM": "lgb",
+        "LSTM": "lstm",
+        "Transformer": "transformer",
+        "PPO": "ppo",
+    }
+
+    for model_name, short in model_map.items():
+        if model_name not in predictions:
+            detail["missing"][model_name] = "no prediction"
+            continue
+
+        probs, _ = predictions[model_name]
+        vote, conf = _extract_vote_and_confidence(probs)
+        if vote is None:
+            detail["missing"][model_name] = "invalid probabilities"
+            continue
+
+        detail["votes"][model_name] = vote
+        detail["confidences"][model_name] = conf
+        row[f"{short}_vote"] = vote
+        row[f"{short}_conf"] = conf
+        if conf >= ENSEMBLE_THRESHOLDS.get(short, 1.0) and vote != "Hold":
+            detail["qualified"].append(model_name)
+
+    ppo_action = None
+    if "PPO" in predictions:
+        _, decisions = predictions["PPO"]
+        if decisions.size:
+            ppo_action = int(decisions.flatten()[-1])
+
+    if ppo_metadata:
+        row["ppo_value"] = ppo_metadata.get("value")
+        row["ppo_entropy"] = ppo_metadata.get("entropy")
+        row["ppo_value_ma100"] = ppo_metadata.get("value_ma100")
+        row["ppo_value_std100"] = ppo_metadata.get("value_std100")
+        ppo_action = ppo_metadata.get("action", ppo_action)
+
+    if ppo_action is not None:
+        row["ppo_action"] = ppo_action
+
+    return row, detail
+
+
+def _live_ensemble_decision(
+    predictions: Dict[str, Tuple[np.ndarray, np.ndarray]],
+    return_details: bool,
+    current_position: float,
+    prev_row: Optional[Mapping],
+    ppo_metadata: Optional[Mapping],
+):
+    row, detail = _build_live_row(predictions, ppo_metadata)
+    signal, ensemble_conf, votes, confs = get_ensemble_signal(row)
+
+    prev_row = prev_row or {}
+    target_size, allow_pyramid, early_exit = get_position_size_and_actions(
+        row, prev_row, signal, current_position
+    )
+
+    direction = 0
+    if signal == "Buy":
+        direction = 1
+    elif signal == "Sell":
+        direction = -1
+
+    position_size = 0.0 if (signal == "HOLD" or early_exit) else direction * target_size
+
+    detail.update(
+        {
+            "ensemble_signal": signal,
+            "ensemble_confidence": ensemble_conf,
+            "qualified_models": list(confs.keys()),
+            "votes_sequence": votes,
+            "pyramid_allowed": allow_pyramid,
+            "early_exit": early_exit,
+            "position_size": position_size,
+            "target_size": target_size,
+            "thresholds": ENSEMBLE_THRESHOLDS,
+        }
+    )
+
+    if len(votes) < 3:
+        detail["reason"] = "Less than 3 qualified models — HOLD"
+    elif signal == "HOLD" and votes:
+        detail["reason"] = "Majority tie — HOLD"
+    elif signal == "HOLD":
+        detail["reason"] = "Nuclear confirmation failed — HOLD"
+    else:
+        detail["reason"] = (
+            f"Majority {signal} with nuclear confirmation; avg_conf={ensemble_conf:.3f}"
+        )
+
+    final = signal if signal != "HOLD" else "Hold"
+    if return_details:
+        return final, detail
+    return final
+
+
 def independent_model_decisions(predictions: Dict[str, Tuple[np.ndarray, np.ndarray]],
                                return_details: bool = False,
                                confidence_threshold: float = 0.98,
-                               model_thresholds: Optional[Mapping[str, float]] = None) -> Tuple[str, Dict]:
-    """Return trade decisions for each model independently.
+                               model_thresholds: Optional[Mapping[str, float]] = None,
+                               current_position: float = 0.0,
+                               prev_row: Optional[Mapping] = None,
+                               ppo_metadata: Optional[Mapping] = None,
+                               use_live_ensemble: bool = True) -> Tuple[str, Dict]:
+    """Return trade decisions using the live ensemble (default) or legacy rules."""
 
-    Any model whose confidence meets or exceeds its own threshold will trigger
-    its trade decision. The function returns the first triggered decision (in a
-    fixed priority order) for backward compatibility, along with a details
-    payload describing all triggered models.
-    """
+    if use_live_ensemble:
+        return _live_ensemble_decision(
+            predictions,
+            return_details,
+            current_position,
+            prev_row,
+            ppo_metadata,
+        )
+
+    # Legacy fallback (kept for compatibility with earlier backtests). Any model
+    # whose confidence meets or exceeds its own threshold will trigger its trade
+    # decision. The function returns the first triggered decision (in a fixed
+    # priority order) for backward compatibility, along with a details payload
+    # describing all triggered models.
 
     detail = {
         "votes": {},

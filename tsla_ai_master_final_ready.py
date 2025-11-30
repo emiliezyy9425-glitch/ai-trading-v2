@@ -1555,7 +1555,7 @@ logger.info("Script initialization completed, proceeding to main loop...")
 # ========== IBKR Connection ==========
 def connect_ibkr(
     max_retries: int = 3,
-    initial_client_id: int = 100,
+    initial_client_id: Optional[int] = None,
     delay: int = 5,
 ) -> Optional[IB]:
     ibkr_port = int(os.getenv("IBKR_PORT", "7496"))
@@ -1571,10 +1571,16 @@ def connect_ibkr(
     for default_host in default_hosts:
         if default_host not in hosts:
             hosts.append(default_host)
+    base_client_id = int(
+        os.getenv(
+            "IBKR_CLIENT_ID",
+            str(initial_client_id if initial_client_id is not None else 100),
+        )
+    )
     attempt_counter = {"count": 0}
     def _connect_single(target_host: str) -> IB:
         attempt_counter["count"] += 1
-        client_id = initial_client_id + attempt_counter["count"] - 1
+        client_id = base_client_id + attempt_counter["count"] - 1
         ib = IB()
         logger.info(
             f"Attempting connection with clientId={client_id} to {target_host}:{ibkr_port}..."

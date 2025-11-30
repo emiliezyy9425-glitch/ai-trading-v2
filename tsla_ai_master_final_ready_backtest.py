@@ -495,30 +495,16 @@ def run_backtest(
         pnl = 0.0
         result = "HOLD"
 
-        if decision == "Buy":
-            if position is None:
-                position = Position(entry_price=price, timestamp=now, direction=1)
-                trade_filled = True
-                result = "ENTRY_LONG"
-            elif position.direction == -1:
-                pnl = position.entry_price - price
-                result = "WIN" if pnl > 0 else "LOSS" if pnl < 0 else "FLAT"
-                trade_filled = True
-                equity_curve.append(pnl)
-                position = Position(entry_price=price, timestamp=now, direction=1)
-                result = f"{result}_FLIP_LONG"
-        elif decision == "Sell":
-            if position is None:
-                position = Position(entry_price=price, timestamp=now, direction=-1)
-                trade_filled = True
-                result = "ENTRY_SHORT"
-            elif position.direction == 1:
-                pnl = price - position.entry_price
-                result = "WIN" if pnl > 0 else "LOSS" if pnl < 0 else "FLAT"
-                trade_filled = True
-                equity_curve.append(pnl)
-                position = Position(entry_price=price, timestamp=now, direction=-1)
-                result = f"{result}_FLIP_SHORT"
+        if decision == "Buy" and position is None:
+            position = Position(entry_price=price, timestamp=now)
+            trade_filled = True
+            result = "ENTRY"
+        elif decision == "Sell" and position is not None:
+            pnl = price - position.entry_price
+            result = "WIN" if pnl > 0 else "LOSS" if pnl < 0 else "FLAT"
+            trade_filled = True
+            equity_curve.append(pnl)
+            position = None
 
         # Human-readable summaries
         tds_summary = f"{indicators['tds_trend'].get(timeframe, 0)}/{indicators['tds_signal'].get(timeframe, 0)}"

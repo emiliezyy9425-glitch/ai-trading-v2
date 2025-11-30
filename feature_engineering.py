@@ -277,6 +277,40 @@ def default_feature_values(feature_names: Sequence[str]) -> dict[str, float]:
     return defaults
 
 
+def sanitize_feature_row(
+    feature_row: pd.Series, feature_names: Sequence[str]
+) -> pd.Series:
+    """Return a copy of ``feature_row`` with non-finite values replaced.
+
+    Models expect fully numeric inputs. When upstream calculations surface
+    ``NaN``/``None`` (for example while IBKR streams are still warming up),
+    we defensively coerce values to floats and fall back to the established
+    default for that column. This helper is shared by both live trading and
+    the backtester to guarantee feature parity before inference.
+    """
+
+    sanitized = feature_row.reindex(feature_names, fill_value=0.0).copy()
+    replaced: list[str] = []
+
+    for col in feature_names:
+        value = sanitized[col]
+        if _is_finite(value):
+            sanitized[col] = float(value)
+            continue
+
+        default_value = SPECIAL_NUMERIC_DEFAULTS.get(col, 0.0)
+        sanitized[col] = default_value
+        replaced.append(col)
+
+    if replaced:
+        logger.warning(
+            "Replacing non-finite feature values with defaults: %s",
+            ", ".join(sorted(replaced)),
+        )
+
+    return sanitized
+
+
 # ================================
 # SEQUENCE CREATION FOR LSTM (FIXED & ROBUST)
 # ================================

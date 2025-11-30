@@ -21,7 +21,7 @@ import tsla_ai_master_final_ready as live_trading
 from tsla_ai_master_final_ready import build_feature_row, is_us_equity_session_open
 from ml_predictor import (
     FEATURE_ALIASES,
-    independent_model_decisions,
+    _live_ensemble_decision,
     predict_with_all_models,
 )
 from indicators import summarize_td_sequential
@@ -480,7 +480,13 @@ def run_backtest(
         )
 
         predictions = predict_with_all_models(sequence_df, seq_len=FEATURE_SEQUENCE_WINDOW)
-        decision, detail = independent_model_decisions(predictions, return_details=True)
+        decision, detail = _live_ensemble_decision(
+            predictions,
+            return_details=True,
+            current_position=0.0 if position is None else 1.0,
+            prev_row={},
+            ppo_metadata=None,
+        )
 
         # Handle position logic
         executed = False

@@ -161,10 +161,8 @@ def ensure_event_loop() -> asyncio.AbstractEventLoop:
 US_MARKET_HOLIDAYS: set[date] = set()
 US_EASTERN = pytz.timezone("America/New_York")
 # Assuming these are defined in separate files; placeholders for imports
-from ml_predictor import (
-    predict_with_all_models,
-    independent_model_decisions,
-)
+import ml_predictor
+from ml_predictor import predict_with_all_models
 
 # These are required by the main script — ml_predictor now defines them again
 MODEL_NAMES = ("LSTM", "Transformer")
@@ -4856,17 +4854,63 @@ def process_single_ticker(
 
     # --- PREDICTION & MODEL DECISIONS ---
     ticker_settings = _get_ticker_settings(ticker)
-    model_thresholds = ticker_settings.get("thresholds")
     predictions = predict_with_all_models(sequence_df)
-    decision, vote_detail = independent_model_decisions(
-        predictions,
-        return_details=True,
-        model_thresholds=model_thresholds,
-    )
+    preds = predictions
+    current_position = get_position_size(ib, ticker)
 
-    decision_detail: dict[str, object] = vote_detail if isinstance(
-        vote_detail, dict
-    ) else {}
+    # After you get the decision from ml_predictor
+    decision, info = ml_predictor.independent_model_decisions(preds, return_details=True)
+
+    ppo_action = info.get("ppo_action", 1)
+
+    if decision == "Hold":
+        target_size = 0.0
+    else:
+        # ---- Pyramiding logic (100% → 150% → 175%) ----
+        if info.get("last_direction") != decision:
+            consecutive = 1
+        else:
+            consecutive = info.get("consecutive_count", 1) + 1
+
+        # PPO decides if we are allowed to be greedy
+        ppo_action = info.get("ppo_action", 1)
+        ppo_value = info.get("ppo_value", 0.0)
+        ppo_ma = info.get("ppo_value_ma100", 0.0)
+        ppo_std = info.get("ppo_value_std100", 0.5)
+        ppo_entropy = info.get("ppo_entropy", 0.3)
+
+        allow_pyramid = (
+            ppo_action == 2 and
+            ppo_value > ppo_ma + 0.5 * ppo_std and
+            ppo_entropy < 0.40
+        )
+
+        early_exit = (
+            ppo_action == 0 or
+            ppo_entropy > 0.60 or
+            (current_position != 0 and info.get("prev_ppo_action", 1) == 2 and ppo_action == 0)
+        )
+
+        if early_exit:
+            target_size = 0.0
+        elif consecutive == 1:
+            target_size = 1.00
+        elif consecutive == 2 and allow_pyramid:
+            target_size = 1.50
+        elif consecutive == 3 and allow_pyramid:
+            target_size = 1.75
+        else:
+            target_size = current_position  # stay at 175% max
+
+        direction = 1.0 if decision == "Buy" else -1.0
+        target_size *= direction
+
+    # Store for next bar
+    info["last_direction"] = decision
+    info["consecutive_count"] = consecutive if decision != "Hold" else 0
+    info["prev_ppo_action"] = ppo_action
+
+    decision_detail: dict[str, object] = info if isinstance(info, dict) else {}
     trigger = decision_detail.get("trigger") or "unknown"
     confidence = float(decision_detail.get("confidence", 0.0))
 

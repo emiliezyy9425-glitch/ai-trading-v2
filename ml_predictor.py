@@ -93,7 +93,6 @@ def _load_feature_scaler():
 
 def _prepare_feature_frame(df: pd.DataFrame, columns: List[str]) -> pd.DataFrame:
     """Ensure column order, clean inf/nan and apply the saved scaler once."""
-
     scaler = _load_feature_scaler()
     scaler_cols = getattr(scaler, "feature_names_in_", None) if scaler is not None else None
 
@@ -136,6 +135,17 @@ def _prepare_feature_frame(df: pd.DataFrame, columns: List[str]) -> pd.DataFrame
     if scaler is None:
         return ordered.astype(float).reindex(columns=columns, fill_value=0)
 
+    try:
+        ordered_for_scaler = ordered.reindex(columns=scaler_cols, fill_value=0)
+        scaled_values = scaler.transform(ordered_for_scaler.astype(float))
+        scaled_df = pd.DataFrame(scaled_values, columns=scaler_cols, index=ordered.index)
+        if new_columns:
+            scaled_df = scaled_df.reindex(columns=canonical_columns, fill_value=0)
+        return scaled_df.reindex(columns=columns, fill_value=0)
+    except Exception as exc:
+        logging.error(f"Scaler transform failed: {exc}")
+        return ordered.astype(float).reindex(columns=columns, fill_value=0)
+
 # Generic loader for joblib-persisted tabular models (RF/XGB/LGB).
 def _load_joblib_model(path: Path, name: str):
     if not path.exists():
@@ -171,17 +181,6 @@ def _predict_tabular_model(df: pd.DataFrame, name: str, path: Path) -> Tuple[np.
     except Exception as exc:
         logging.error(f"{name} predict error: {exc}")
         return np.array([]), np.array([])
-
-    try:
-        ordered_for_scaler = ordered.reindex(columns=scaler_cols, fill_value=0)
-        scaled_values = scaler.transform(ordered_for_scaler.astype(float))
-        scaled_df = pd.DataFrame(scaled_values, columns=scaler_cols, index=ordered.index)
-        if new_columns:
-            scaled_df = scaled_df.reindex(columns=canonical_columns, fill_value=0)
-        return scaled_df.reindex(columns=columns, fill_value=0)
-    except Exception as exc:
-        logging.error(f"Scaler transform failed: {exc}")
-        return ordered.astype(float).reindex(columns=columns, fill_value=0)
 
 # Canonical list of ensemble model names used across the trading stack.
 MODEL_NAMES: tuple[str, ...] = (

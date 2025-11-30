@@ -62,6 +62,7 @@ def write_trade_csv(row: dict):
     with open(BACKTEST_TRADE_LOG_PATH, "a", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=row.keys())
         if not file_exists:
+            logger.info("Backtest trade log columns: %s", ", ".join(row.keys()))
             writer.writeheader()
         writer.writerow(row)
 

@@ -19,7 +19,11 @@ import numpy as np
 # === EXACT SAME IMPORTS AS LIVE TRADING ===
 import tsla_ai_master_final_ready as live_trading
 from tsla_ai_master_final_ready import build_feature_row, is_us_equity_session_open
-from ml_predictor import predict_with_all_models, independent_model_decisions
+from ml_predictor import (
+    FEATURE_ALIASES,
+    independent_model_decisions,
+    predict_with_all_models,
+)
 from indicators import summarize_td_sequential
 from sp500_above_20d import load_sp500_above_20d_history
 from sp500_breadth import calculate_s5tw_history_ibkr_sync
@@ -39,6 +43,7 @@ FEATURE_SEQUENCE_WINDOW = 60
 
 REQUIRED_FEATURE_COLUMNS: tuple[str, ...] = (
     "bb_position_1h",
+    "bb_position_1h.1",
     "ret_24h",
     "price_z_120h",
     "ret_4h",
@@ -160,16 +165,13 @@ def _align_feature_row(
     for key, value in raw_features.items():
         aligned[key] = value
 
-    duplicate_maps = {
-        "price_z_120h.1": "price_z_120h",
-        "ret_1h.1": "ret_1h",
-        "ret_4h.1": "ret_4h",
-        "ret_24h.1": "ret_24h",
-    }
-    for duplicate, source in duplicate_maps.items():
-        if duplicate in aligned and source in aligned:
-            if pd.isna(aligned[duplicate]) or aligned[duplicate] == 0:
-                aligned[duplicate] = aligned[source]
+    for alias, source in FEATURE_ALIASES.items():
+        if source not in aligned:
+            continue
+
+        alias_value = aligned.get(alias)
+        if alias not in aligned or pd.isna(alias_value) or alias_value == 0:
+            aligned[alias] = aligned[source]
 
     return aligned.reindex(REQUIRED_FEATURE_COLUMNS, fill_value=0.0)
 

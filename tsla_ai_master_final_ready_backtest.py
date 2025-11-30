@@ -316,7 +316,7 @@ def run_backtest(
             return timedelta(hours=4)
         return timedelta(hours=1)
 
-    for bar_idx, (ts, _) in enumerate(df.iterrows()):
+    for bar_idx, (ts, bar) in enumerate(df.iterrows()):
         now = ts.to_pydatetime()
         reference = now + _timeframe_delta(timeframe)
 

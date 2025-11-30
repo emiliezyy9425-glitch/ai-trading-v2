@@ -44,7 +44,6 @@ REQUIRED_FEATURE_COLUMNS: tuple[str, ...] = (
     "ret_1h",
     "adx_1h",
     "adx_4h",
-    "bb_position_1h.1",
     "ema10_change_1d",
     "ema10_change_1h",
     "ema10_change_4h",
@@ -143,11 +142,34 @@ def write_trade_csv(row: dict):
         writer.writerow(row)
 
 
-def _align_feature_row(raw_features: pd.Series) -> pd.Series:
+def _align_feature_row(
+    raw_features: pd.Series, previous_features: pd.Series | None = None
+) -> pd.Series:
+    """Align a raw feature row to the exact schema with sensible fallbacks."""
+
     defaults = default_feature_values(REQUIRED_FEATURE_COLUMNS)
     aligned = pd.Series(defaults)
+
+    if previous_features is not None:
+        for col in REQUIRED_FEATURE_COLUMNS:
+            prev_val = previous_features.get(col)
+            if pd.notna(prev_val):
+                aligned[col] = prev_val
+
     for key, value in raw_features.items():
         aligned[key] = value
+
+    duplicate_maps = {
+        "price_z_120h.1": "price_z_120h",
+        "ret_1h.1": "ret_1h",
+        "ret_4h.1": "ret_4h",
+        "ret_24h.1": "ret_24h",
+    }
+    for duplicate, source in duplicate_maps.items():
+        if duplicate in aligned and source in aligned:
+            if pd.isna(aligned[duplicate]) or aligned[duplicate] == 0:
+                aligned[duplicate] = aligned[source]
+
     return aligned.reindex(REQUIRED_FEATURE_COLUMNS, fill_value=0.0)
 
 
@@ -393,7 +415,7 @@ def run_backtest(
         raw_features = build_feature_row(
             indicators, price, iv, delta, sp500_pct, previous_features=previous_features
         )
-        aligned_features = _align_feature_row(raw_features)
+        aligned_features = _align_feature_row(raw_features, previous_features)
         feature_history.append(aligned_features)
 
         sequence_df = pd.DataFrame(feature_history).reindex(

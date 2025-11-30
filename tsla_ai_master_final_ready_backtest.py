@@ -6,6 +6,7 @@ import argparse
 import csv
 import logging
 import os
+from collections import deque
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -21,6 +22,7 @@ from ml_predictor import predict_with_all_models, independent_model_decisions
 from indicators import summarize_td_sequential
 from sp500_above_20d import load_sp500_above_20d_history
 from sp500_breadth import calculate_s5tw_history_ibkr_sync
+from feature_engineering import default_feature_values
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(
@@ -32,6 +34,80 @@ logging.basicConfig(
 PROJECT_ROOT = os.getenv("PROJECT_ROOT", "/app")
 DATA_DIR = os.path.join(PROJECT_ROOT, "data")
 BACKTEST_TRADE_LOG_PATH = os.path.join(DATA_DIR, "trade_log_backtest.csv")
+FEATURE_SEQUENCE_WINDOW = 60
+
+REQUIRED_FEATURE_COLUMNS: tuple[str, ...] = (
+    "bb_position_1h",
+    "ret_24h",
+    "price_z_120h",
+    "ret_4h",
+    "ret_1h",
+    "adx_1h",
+    "adx_4h",
+    "bb_position_1h.1",
+    "ema10_change_1d",
+    "ema10_change_1h",
+    "ema10_change_4h",
+    "ema10_dev_1d",
+    "ema10_dev_1h",
+    "ema10_dev_4h",
+    "macd_1d",
+    "macd_1h",
+    "macd_4h",
+    "macd_change_1d",
+    "macd_change_1h",
+    "macd_change_4h",
+    "pattern_bearish_engulfing_1d",
+    "pattern_bearish_engulfing_1h",
+    "pattern_bearish_engulfing_4h",
+    "pattern_bullish_engulfing_1d",
+    "pattern_bullish_engulfing_1h",
+    "pattern_bullish_engulfing_4h",
+    "pattern_evening_star_1d",
+    "pattern_evening_star_1h",
+    "pattern_evening_star_4h",
+    "pattern_hammer_1d",
+    "pattern_hammer_1h",
+    "pattern_hammer_4h",
+    "pattern_marubozu_bear_1d",
+    "pattern_marubozu_bear_1h",
+    "pattern_marubozu_bear_4h",
+    "pattern_marubozu_bull_1d",
+    "pattern_marubozu_bull_1h",
+    "pattern_marubozu_bull_4h",
+    "pattern_morning_star_1d",
+    "pattern_morning_star_1h",
+    "pattern_morning_star_4h",
+    "pattern_shooting_star_1d",
+    "pattern_shooting_star_1h",
+    "pattern_shooting_star_4h",
+    "price_above_ema10_1d",
+    "price_above_ema10_1h",
+    "price_above_ema10_4h",
+    "price_z_120h.1",
+    "ret_1h.1",
+    "ret_24h.1",
+    "ret_4h.1",
+    "rsi_1h",
+    "rsi_4h",
+    "rsi_change_1h",
+    "signal_1d",
+    "signal_1h",
+    "signal_4h",
+    "sp500_above_20d",
+    "stoch_d_1d",
+    "stoch_d_1h",
+    "stoch_d_4h",
+    "stoch_k_1d",
+    "stoch_k_1h",
+    "stoch_k_4h",
+    "td9_1d",
+    "td9_1h",
+    "td9_4h",
+    "zig_1d",
+    "zig_1h",
+    "zig_4h",
+)
 
 
 @dataclass
@@ -65,6 +141,14 @@ def write_trade_csv(row: dict):
             logger.info("Backtest trade log columns: %s", ", ".join(row.keys()))
             writer.writeheader()
         writer.writerow(row)
+
+
+def _align_feature_row(raw_features: pd.Series) -> pd.Series:
+    defaults = default_feature_values(REQUIRED_FEATURE_COLUMNS)
+    aligned = pd.Series(defaults)
+    for key, value in raw_features.items():
+        aligned[key] = value
+    return aligned.reindex(REQUIRED_FEATURE_COLUMNS, fill_value=0.0)
 
 
 def run_backtest(
@@ -197,6 +281,23 @@ def run_backtest(
 
     position: Position | None = None
     equity_curve = []
+    feature_history: deque[pd.Series] = live_trading.FEATURE_HISTORY[ticker]
+
+    if not feature_history:
+        try:
+            live_trading._seed_feature_history_from_historical_data(ticker, None)
+        except Exception as exc:  # pragma: no cover - defensive seeding
+            logger.warning("Feature history seed failed for %s: %s", ticker, exc)
+        feature_history = live_trading.FEATURE_HISTORY[ticker]
+
+    if feature_history:
+        logger.info(
+            "Seeded %d/%d feature rows before backtest loop.",
+            len(feature_history),
+            FEATURE_SEQUENCE_WINDOW,
+        )
+    else:
+        logger.info("No historical seed available; will backfill defaults to 60 rows.")
 
     # Trim to the requested window
     df = df[(df.index >= start_dt) & (df.index < end_dt)].sort_index()
@@ -215,7 +316,7 @@ def run_backtest(
             return timedelta(hours=4)
         return timedelta(hours=1)
 
-    for ts, _ in df.iterrows():
+    for bar_idx, (ts, _) in enumerate(df.iterrows()):
         now = ts.to_pydatetime()
         reference = now + _timeframe_delta(timeframe)
 
@@ -250,10 +351,27 @@ def run_backtest(
                     sp500_pct = float(historical.iloc[-1])
 
         # EXACT SAME FEATURE ROW AS LIVE TRADING
-        features = build_feature_row(indicators, price, iv, delta, sp500_pct)
-        features_df = pd.DataFrame([features])
+        previous_features = feature_history[-1] if feature_history else None
+        raw_features = build_feature_row(
+            indicators, price, iv, delta, sp500_pct, previous_features=previous_features
+        )
+        aligned_features = _align_feature_row(raw_features)
+        feature_history.append(aligned_features)
 
-        predictions = predict_with_all_models(features_df)
+        sequence_df = pd.DataFrame(feature_history).reindex(
+            columns=REQUIRED_FEATURE_COLUMNS, fill_value=0.0
+        )
+        if len(sequence_df) < FEATURE_SEQUENCE_WINDOW:
+            padding_needed = FEATURE_SEQUENCE_WINDOW - len(sequence_df)
+            padding = pd.DataFrame(
+                [default_feature_values(REQUIRED_FEATURE_COLUMNS)] * padding_needed
+            )
+            sequence_df = pd.concat([padding, sequence_df], ignore_index=True)
+        sequence_df.index = pd.date_range(
+            end=now, periods=len(sequence_df), freq=_timeframe_delta(timeframe)
+        )
+
+        predictions = predict_with_all_models(sequence_df, seq_len=FEATURE_SEQUENCE_WINDOW)
         decision, detail = independent_model_decisions(predictions, return_details=True)
 
         # Handle position logic
@@ -319,7 +437,9 @@ def run_backtest(
             except Exception:
                 return str(val)
 
-        feature_logs = {f"feature_{k}": _serialize_feature_value(v) for k, v in features.items()}
+        feature_logs = {
+            f"feature_{k}": _serialize_feature_value(v) for k, v in aligned_features.items()
+        }
 
         # Write full audit trail
         write_trade_csv({

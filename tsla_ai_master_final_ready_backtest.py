@@ -20,6 +20,7 @@ from tsla_ai_master_final_ready import build_feature_row, is_us_equity_session_o
 from ml_predictor import predict_with_all_models, independent_model_decisions
 from indicators import summarize_td_sequential
 from sp500_above_20d import load_sp500_above_20d_history
+from sp500_breadth import calculate_s5tw_history_ibkr_sync
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(
@@ -154,8 +155,37 @@ def run_backtest(
         )
 
     # Load historical breadth data once so we can align it with backtest bars
-    breadth_path = Path(DATA_DIR) / "S&P 500 Stocks Above 20-Day Average Historical Data.csv"
-    s5tw_history = load_sp500_above_20d_history(breadth_path)
+    history_end_date = (end_dt - timedelta(days=1)).date()
+    s5tw_history = pd.Series(dtype=float)
+
+    try:
+        ib_for_breadth = live_trading.connect_ibkr(max_retries=1)
+    except Exception as exc:  # pragma: no cover - defensive logging
+        logger.warning("IBKR connection for breadth history failed: %s", exc)
+        ib_for_breadth = None
+
+    if ib_for_breadth is not None:
+        try:
+            s5tw_history = calculate_s5tw_history_ibkr_sync(
+                ib_for_breadth,
+                start_dt.date(),
+                history_end_date,
+            )
+        except Exception as exc:  # pragma: no cover - IBKR/backfill errors
+            logger.warning(
+                "IBKR breadth history unavailable (%s); falling back to CSV export.",
+                exc,
+            )
+        finally:
+            try:
+                ib_for_breadth.disconnect()
+            except Exception:
+                pass
+
+    if s5tw_history.empty:
+        breadth_path = Path(DATA_DIR) / "S&P 500 Stocks Above 20-Day Average Historical Data.csv"
+        s5tw_history = load_sp500_above_20d_history(breadth_path)
+
     if not s5tw_history.empty:
         s5tw_history = s5tw_history.sort_index()
 

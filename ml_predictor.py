@@ -93,6 +93,7 @@ _SCALER_MISMATCH_WARNED = False
 _MISSING_FEATURE_LOG: dict[str, tuple[str, ...]] = {}
 _ALIAS_WARNED = False
 _TABULAR_FALLBACK_WARNED: set[str] = set()
+_FEATURE_ORDER_CACHE = None
 
 
 def _load_feature_scaler():
@@ -116,6 +117,36 @@ def _load_feature_scaler():
         logging.error(f"Unable to load scaler from {scaler_path}: {exc}")
         _SCALER_CACHE = False
         return None
+
+
+def _load_feature_order() -> Optional[List[str]]:
+    """Return the feature order used during training if it was saved."""
+
+    global _FEATURE_ORDER_CACHE
+    if _FEATURE_ORDER_CACHE is not None:
+        return _FEATURE_ORDER_CACHE or None
+
+    env_path = os.environ.get("FEATURE_ORDER_PATH")
+    candidates = [
+        Path(env_path).expanduser() if env_path else None,
+        MODEL_DIR / "feature_order.joblib",
+        MODEL_DIR / "transformer_feature_order.joblib",
+        Path("/app/models/feature_order.joblib"),
+        Path("/app/models/transformer_feature_order.joblib"),
+    ]
+
+    for path in candidates:
+        if path and path.exists():
+            try:
+                order = load(path)
+                _FEATURE_ORDER_CACHE = [str(col) for col in order]
+                logging.info(f"Loaded saved feature order from {path}")
+                return _FEATURE_ORDER_CACHE
+            except Exception as exc:
+                logging.warning(f"Failed to load feature order from {path}: {exc}")
+
+    _FEATURE_ORDER_CACHE = False
+    return None
 
 
 def _apply_feature_aliases(df: pd.DataFrame) -> pd.DataFrame:
@@ -553,21 +584,33 @@ def predict_transformer(df: pd.DataFrame, seq_len: Optional[int] = None) -> Tupl
         logging.warning(f"Transformer load failed: {err}")
         return np.array([]), np.array([])
 
-    cols = cfg.get("feature_cols", FEATURE_NAMES)  # Fallback if not saved (retrain doesn't save it)
-    cols = list(dict.fromkeys(cols))  # drop accidental duplicates while keeping order
+    saved_cols = cfg.get("feature_cols")
+    if saved_cols:
+        cols = list(dict.fromkeys(saved_cols))
+    else:
+        saved_order = _load_feature_order()
+        cols = saved_order or FEATURE_NAMES
 
     input_size = int(cfg.get("input_size", len(cols)))
     if len(cols) != input_size:
-        logging.warning(
-            "Transformer config input_size (%d) differs from feature_cols length (%d); aligning to input_size.",
-            input_size,
-            len(cols),
-        )
-        if len(cols) > input_size:
-            cols = cols[:input_size]
+        saved_order = _load_feature_order()
+        if saved_order and len(saved_order) == input_size:
+            cols = saved_order
+            logging.info(
+                "Using saved transformer feature order (%d columns) to match input_size.",
+                len(saved_order),
+            )
         else:
-            filler = [c for c in FEATURE_NAMES if c not in cols]
-            cols = [*cols, *filler[: input_size - len(cols)]]
+            logging.warning(
+                "Transformer config input_size (%d) differs from feature_cols length (%d); aligning to input_size.",
+                input_size,
+                len(cols),
+            )
+            if len(cols) > input_size:
+                cols = cols[:input_size]
+            else:
+                filler = [c for c in FEATURE_NAMES if c not in cols]
+                cols = [*cols, *filler[: input_size - len(cols)]]
 
     missing = [c for c in cols if c not in df.columns]
     if missing:

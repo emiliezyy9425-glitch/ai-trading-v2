@@ -168,8 +168,8 @@ def run_backtest(
 
     base_client_id = client_id or int(os.getenv("IBKR_BACKTEST_CLIENT_ID", "200"))
 
-    def _load_raw_bars_from_disk() -> pd.DataFrame:
-        raw_dir = Path(PROJECT_ROOT) / "data" / "lake" / "raw" / ticker / timeframe.replace(" ", "_")
+    def _load_raw_bars_from_disk(tf: str = timeframe) -> pd.DataFrame:
+        raw_dir = Path(PROJECT_ROOT) / "data" / "lake" / "raw" / ticker / tf.replace(" ", "_")
         if not raw_dir.is_dir():
             return pd.DataFrame()
 
@@ -232,7 +232,7 @@ def run_backtest(
     df = live_trading.load_curated_bars(ticker, timeframe)
     if df.empty:
         logger.info("Curated data missing; attempting to use locally stored raw price bars instead.")
-        df = _load_raw_bars_from_disk()
+        df = _load_raw_bars_from_disk(timeframe)
     if df.empty:
         df = _download_missing_bars_from_ibkr()
     if df.empty:
@@ -305,6 +305,21 @@ def run_backtest(
     if df.empty:
         logger.error("No data in date range")
         return
+
+    # Cache higher timeframes for price-aware feature calculations
+    price_frames: dict[str, pd.DataFrame] = {}
+    for tf in ("4 hours", "1 day"):
+        tf_df = live_trading.load_curated_bars(ticker, tf)
+        if tf_df.empty:
+            tf_df = _load_raw_bars_from_disk(tf)
+
+        if tf_df.empty:
+            logger.warning("No %s price data available for %s; features may degrade.", tf, ticker)
+            continue
+
+        tf_df = tf_df.sort_index()
+        tf_df.index = pd.to_datetime(tf_df.index, utc=True)
+        price_frames[tf] = tf_df
 
     logger.info(f"Loaded {len(df)} bars. Running bar-by-bar...")
 
@@ -428,6 +443,15 @@ def run_backtest(
         trans_v, trans_c = get_vote_conf("Transformer")
 
         price_map = indicators.get("price", {})
+
+        for tf, frame in price_frames.items():
+            tf_price = frame[frame.index <= reference]["close"]
+            if tf_price.empty:
+                continue
+            price_map[tf] = float(tf_price.iloc[-1])
+
+        price_map[timeframe] = price
+        indicators["price"] = price_map
 
         def _price_value(key: str) -> float | str:
             val = price_map.get(key)

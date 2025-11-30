@@ -119,6 +119,7 @@ REQUIRED_FEATURE_COLUMNS: tuple[str, ...] = (
 class Position:
     entry_price: float
     timestamp: datetime
+    direction: int  # +1 for long, -1 for short
 
 
 @contextmanager
@@ -483,7 +484,7 @@ def run_backtest(
         decision, detail = _live_ensemble_decision(
             predictions,
             return_details=True,
-            current_position=0.0 if position is None else 1.0,
+            current_position=0.0 if position is None else float(position.direction),
             prev_row={},
             ppo_metadata=None,
         )

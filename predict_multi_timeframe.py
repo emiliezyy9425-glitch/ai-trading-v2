@@ -179,8 +179,10 @@ def load_latest_features(ticker: str):
     for col in missing:
         features[col] = 0.0
 
-    # Preserve deterministic order and drop any metadata columns
-    ordered = features.reindex(columns=LIVE_MODEL_FEATURES, fill_value=0.0)
+    # Preserve deterministic order while retaining price columns used downstream
+    price_columns = [col for col in PRICE_COLS.values() if col not in LIVE_MODEL_FEATURES]
+    ordered_cols = LIVE_MODEL_FEATURES + price_columns
+    ordered = features.reindex(columns=ordered_cols, fill_value=0.0)
     feats_row = ordered.iloc[-1]
 
     return feats_row, features  # return both row and full df

@@ -914,165 +914,74 @@ def _live_ensemble_decision(
     return final
 
 
-def independent_model_decisions(predictions: Dict[str, Tuple[np.ndarray, np.ndarray]],
-                               return_details: bool = False,
-                               confidence_threshold: float = 0.98,
-                               model_thresholds: Optional[Mapping[str, float]] = None,
-                               current_position: float = 0.0,
-                               prev_row: Optional[Mapping] = None,
-                               ppo_metadata: Optional[Mapping] = None,
-                               use_live_ensemble: bool = True) -> Tuple[str, Dict]:
-    """Return trade decisions using the live ensemble (default) or legacy rules."""
+NUCLEAR_XGB = 0.94
+NUCLEAR_LSTM = 0.99
 
-    if use_live_ensemble:
-        return _live_ensemble_decision(
-            predictions,
-            return_details,
-            current_position,
-            prev_row,
-            ppo_metadata,
-        )
-
-    # Legacy fallback (kept for compatibility with earlier backtests). Any model
-    # whose confidence meets or exceeds its own threshold will trigger its trade
-    # decision. The function returns the first triggered decision (in a fixed
-    # priority order) for backward compatibility, along with a details payload
-    # describing all triggered models.
-
+def independent_model_decisions(predictions: Dict, return_details: bool = False):
     detail = {
         "votes": {},
         "confidences": {},
-        "missing": {},
-        "thresholds": {},
-        "trigger": None,
+        "thresholds": ENSEMBLE_THRESHOLDS.copy(),
         "triggers": [],
-        "reason": "",
-        "confidence": 0.0,
+        "missing": {},
     }
 
-    ordered_models = list(MODEL_NAMES)
+    # Step 1: Collect only models that beat their personal threshold
+    qualified = []
+    for name, (probs, extra) in predictions.items():
+        if name not in ENSEMBLE_THRESHOLDS:
+            continue
+        thresh = ENSEMBLE_THRESHOLDS[name]
 
-    thresholds_lookup = MODEL_CONFIDENCE_THRESHOLDS.copy()
-    if model_thresholds:
-        for key, value in model_thresholds.items():
-            if value is None:
-                continue
-            for candidate in ordered_models:
-                if candidate.lower() == key.lower():
-                    thresholds_lookup[candidate] = float(value)
-                    break
-
-    def _threshold_for(model_name: str) -> float:
-        return thresholds_lookup.get(model_name, confidence_threshold)
-
-    for name in ordered_models:
-        if name not in predictions:
+        if probs is None or len(probs) == 0:
             detail["missing"][name] = "no prediction"
             continue
 
-        probs, _ = predictions[name]
-        if probs.size == 0:
-            detail["missing"][name] = "no prediction"
-            continue
-
-        finite = np.asarray(probs, dtype=float)
-        finite = finite[np.isfinite(finite)]
-        if finite.size == 0:
-            detail["missing"][name] = "invalid probabilities"
-            continue
-
-        non_zero = finite[finite != 0]
-        effective = non_zero if non_zero.size else finite
-
-        prob = float(effective.mean())
-        if prob > 0.5:
-            decision = "Buy"
-            confidence = prob
-        elif prob < 0.5:
-            decision = "Sell"
-            confidence = 1 - prob
-        else:
-            decision = "Hold"
-            confidence = 0.5
+        prob = float(np.mean([p for p in probs if np.isfinite(p) and p != 0]) or 0.5)
+        decision = "Buy" if prob > 0.5 else "Sell" if prob < 0.5 else "Hold"
+        confidence = prob if decision == "Buy" else 1 - prob
 
         detail["votes"][name] = decision
         detail["confidences"][name] = confidence
-        threshold = _threshold_for(name)
-        detail["thresholds"][name] = threshold
 
-        if confidence >= threshold and decision != "Hold":
-            trigger_info = {
-                "model": name,
-                "decision": decision,
-                "confidence": confidence,
-                "threshold": threshold,
-            }
-            detail["triggers"].append(trigger_info)
+        if confidence >= thresh and decision != "Hold":
+            qualified.append((name, decision, confidence))
 
-    # If both flagship models are highly confident but disagree, stand down
-    if (
-        set(detail["votes"].keys()) >= {"LSTM", "Transformer"}
-        and detail["votes"]["LSTM"] != detail["votes"]["Transformer"]
-        and detail["votes"]["LSTM"] != "Hold"
-        and detail["votes"]["Transformer"] != "Hold"
-        and detail["confidences"].get("LSTM", 0.0)
-        >= HIGH_CONFIDENCE_DISAGREEMENT_THRESHOLD
-        and detail["confidences"].get("Transformer", 0.0)
-        >= HIGH_CONFIDENCE_DISAGREEMENT_THRESHOLD
-    ):
+    if len(qualified) < 3:
         final = "Hold"
-        detail["trigger"] = "LSTM vs Transformer"
-        detail["confidence"] = min(
-            detail["confidences"].get("LSTM", 0.0),
-            detail["confidences"].get("Transformer", 0.0),
-        )
-        detail["reason"] = "HIGH CONFIDENCE DISAGREEMENT — HOLD"
+        detail["reason"] = f"Only {len(qualified)} models qualified (<3)"
         return (final, detail) if return_details else final
 
-    if not detail["votes"]:
+    # Step 2: Majority vote
+    votes = [dec for _, dec, _ in qualified]
+    majority = "Buy" if votes.count("Buy") > votes.count("Sell") else "Sell"
+
+    # Step 3: NUCLEAR CONFIRMATION — at least one XGBoost ≥0.94 or LSTM ≥0.99 must agree
+    nuclear_ok = False
+    for name, dec, conf in qualified:
+        if name == "xgb" and conf >= NUCLEAR_XGB and dec == majority:
+            nuclear_ok = True
+        if name == "lstm" and conf >= NUCLEAR_LSTM and dec == majority:
+            nuclear_ok = True
+    if not nuclear_ok:
         final = "Hold"
-        detail["reason"] = "No valid predictions available"
+        detail["reason"] = "No nuclear confirmation (XGB≥0.94 or LSTM≥0.99)"
         return (final, detail) if return_details else final
 
-    if detail["triggers"]:
-        first = detail["triggers"][0]
-        final = first["decision"]
-        detail["trigger"] = first["model"]
-        detail["confidence"] = first["confidence"]
-        detail["reason"] = (
-            f"{first['model']} confidence {first['confidence']:.2f} >= "
-            f"{first['threshold']:.2f}; executing its decision"
-        )
-        return (final, detail) if return_details else final
+    avg_conf = np.mean([conf for _, dec, conf in qualified if dec == majority])
+    detail["reason"] = f"≥3 qualified + nuclear confirmed → {majority}"
+    detail["confidence"] = float(avg_conf)
 
-    # If LSTM and Transformer agree on a non-hold direction, execute that
-    # decision even if neither model individually cleared its own threshold.
-    if (
-        "LSTM" in detail["votes"]
-        and "Transformer" in detail["votes"]
-        and detail["votes"]["LSTM"] == detail["votes"]["Transformer"]
-        and detail["votes"]["LSTM"] != "Hold"
-    ):
-        final = detail["votes"]["LSTM"]
-        detail["trigger"] = "LSTM+Transformer"
-        detail["confidence"] = min(
-            detail["confidences"].get("LSTM", 0.0),
-            detail["confidences"].get("Transformer", 0.0),
-        )
-        detail["reason"] = (
-            "LSTM and Transformer agree on direction; executing consensus trade"
-        )
-        return (final, detail) if return_details else final
+    # Attach PPO data for live script (pyramiding & early exit)
+    if "ppo" in predictions:
+        ppo_probs, ppo_extra = predictions["ppo"]
+        detail["ppo_action"] = int(ppo_extra.get("action", 1))      # 0=reduce, 1=hold, 2=aggressive
+        detail["ppo_value"] = float(ppo_extra.get("value", 0.0))
+        detail["ppo_entropy"] = float(ppo_extra.get("entropy", 0.3))
+        detail["ppo_value_ma100"] = float(ppo_extra.get("value_ma100", 0.0))
+        detail["ppo_value_std100"] = float(ppo_extra.get("value_std100", 0.5))
 
-    final = "Hold"
-    leader, leader_conf = max(detail["confidences"].items(), key=lambda item: item[1])
-    detail["trigger"] = leader
-    detail["confidence"] = leader_conf
-    detail["reason"] = (
-        f"No model met its confidence threshold; highest was {leader} "
-        f"({leader_conf:.2f}/{detail['thresholds'].get(leader, confidence_threshold):.2f})"
-    )
-    return (final, detail) if return_details else final
+    return (majority, detail) if return_details else majority
 
 
 # ------------------------------------------------------------------

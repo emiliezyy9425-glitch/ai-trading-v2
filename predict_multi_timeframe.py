@@ -21,6 +21,78 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(message)s", date
 log = logging.getLogger(__name__)
 
 PRICE_COLS = {"daily": "price_1d", "weekly": "price_1w", "monthly": "price_1M"}
+LIVE_MODEL_FEATURES: list[str] = [
+    "bb_position_1h",
+    "ret_24h",
+    "price_z_120h",
+    "ret_4h",
+    "ret_1h",
+    "adx_1h",
+    "adx_4h",
+    "bb_position_1h.1",
+    "ema10_change_1d",
+    "ema10_change_1h",
+    "ema10_change_4h",
+    "ema10_dev_1d",
+    "ema10_dev_1h",
+    "ema10_dev_4h",
+    "macd_1d",
+    "macd_1h",
+    "macd_4h",
+    "macd_change_1d",
+    "macd_change_1h",
+    "macd_change_4h",
+    "pattern_bearish_engulfing_1d",
+    "pattern_bearish_engulfing_1h",
+    "pattern_bearish_engulfing_4h",
+    "pattern_bullish_engulfing_1d",
+    "pattern_bullish_engulfing_1h",
+    "pattern_bullish_engulfing_4h",
+    "pattern_evening_star_1d",
+    "pattern_evening_star_1h",
+    "pattern_evening_star_4h",
+    "pattern_hammer_1d",
+    "pattern_hammer_1h",
+    "pattern_hammer_4h",
+    "pattern_marubozu_bear_1d",
+    "pattern_marubozu_bear_1h",
+    "pattern_marubozu_bear_4h",
+    "pattern_marubozu_bull_1d",
+    "pattern_marubozu_bull_1h",
+    "pattern_marubozu_bull_4h",
+    "pattern_morning_star_1d",
+    "pattern_morning_star_1h",
+    "pattern_morning_star_4h",
+    "pattern_shooting_star_1d",
+    "pattern_shooting_star_1h",
+    "pattern_shooting_star_4h",
+    "price_above_ema10_1d",
+    "price_above_ema10_1h",
+    "price_above_ema10_4h",
+    "price_z_120h.1",
+    "ret_1h.1",
+    "ret_24h.1",
+    "ret_4h.1",
+    "rsi_1h",
+    "rsi_4h",
+    "rsi_change_1h",
+    "signal_1d",
+    "signal_1h",
+    "signal_4h",
+    "sp500_above_20d",
+    "stoch_d_1d",
+    "stoch_d_1h",
+    "stoch_d_4h",
+    "stoch_k_1d",
+    "stoch_k_1h",
+    "stoch_k_4h",
+    "td9_1d",
+    "td9_1h",
+    "td9_4h",
+    "zig_1d",
+    "zig_1h",
+    "zig_4h",
+]
 
 
 def append_missing_data(ticker: str):
@@ -91,6 +163,17 @@ def load_latest_features(ticker: str):
     features = _finalise_feature_frame(recent, ticker, start=None, end=None)
     features = add_golden_price_features(features)
 
+    duplicate_maps = {
+        "bb_position_1h.1": "bb_position_1h",
+        "price_z_120h.1": "price_z_120h",
+        "ret_1h.1": "ret_1h",
+        "ret_4h.1": "ret_4h",
+        "ret_24h.1": "ret_24h",
+    }
+    for dup, src in duplicate_maps.items():
+        if dup not in features.columns and src in features.columns:
+            features[dup] = features[src]
+
     # Restore index and close price
     features.index = original_index[-len(features):]
     features["close"] = close_prices.values[-len(features):]
@@ -102,10 +185,14 @@ def load_latest_features(ticker: str):
 
     features = features.ffill().fillna(0)
 
-    # CRITICAL: Use EXACTLY the same columns as backtester
-    # Your backtester uses all columns EXCEPT a few metadata ones
-    feature_cols = [c for c in features.columns if c not in ["timestamp", "date", "datetime", "ticker"]]
-    feats_row = features[feature_cols].iloc[-1]
+    # CRITICAL: Align to the live trading feature schema expected by the models
+    missing = [col for col in LIVE_MODEL_FEATURES if col not in features.columns]
+    for col in missing:
+        features[col] = 0.0
+
+    # Preserve deterministic order and drop any metadata columns
+    ordered = features.reindex(columns=LIVE_MODEL_FEATURES, fill_value=0.0)
+    feats_row = ordered.iloc[-1]
 
     return feats_row, features  # return both row and full df
 

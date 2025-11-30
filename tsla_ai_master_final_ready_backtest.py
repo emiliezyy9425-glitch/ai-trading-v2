@@ -17,7 +17,7 @@ import numpy as np
 # === EXACT SAME IMPORTS AS LIVE TRADING ===
 import tsla_ai_master_final_ready as live_trading
 from tsla_ai_master_final_ready import build_feature_row, is_us_equity_session_open
-from ml_predictor import predict_with_all_models, ensemble_vote
+from ml_predictor import predict_with_all_models, independent_model_decisions
 from indicators import summarize_td_sequential
 
 logger = logging.getLogger(__name__)
@@ -203,7 +203,7 @@ def run_backtest(
         features_df = pd.DataFrame([features])
 
         predictions = predict_with_all_models(features_df)
-        decision, detail = ensemble_vote(predictions, return_details=True)
+        decision, detail = independent_model_decisions(predictions, return_details=True)
 
         # Handle position logic
         executed = False

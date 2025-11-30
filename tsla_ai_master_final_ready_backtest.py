@@ -6,6 +6,7 @@ import argparse
 import csv
 import logging
 import os
+import math
 from collections import deque
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -345,6 +346,32 @@ def run_backtest(
             return timedelta(hours=4)
         return timedelta(hours=1)
 
+    def _ema10_change_from_frame(frame: pd.DataFrame, tf: str, cutoff: datetime) -> float | None:
+        if frame.empty or "close" not in frame:
+            return None
+
+        history = frame[frame.index <= cutoff]
+        if len(history) < 2:
+            return None
+
+        if tf == "1 day":
+            ema_series = history["close"].ewm(span=10, adjust=False).mean()
+        else:
+            daily_close = history["close"].resample("1D").last()
+            ema_series = daily_close.ewm(span=10, adjust=False).mean()
+            ema_series = ema_series.reindex(history.index, method="ffill")
+
+        if len(ema_series) < 2:
+            return None
+
+        ema_last = ema_series.iloc[-1]
+        ema_prev = ema_series.iloc[-2]
+
+        if any(pd.isna(val) for val in (ema_last, ema_prev)):
+            return None
+
+        return float(ema_last - ema_prev)
+
     for bar_idx, (ts, bar) in enumerate(df.iterrows()):
         now = ts.to_pydatetime()
         reference = now + _timeframe_delta(timeframe)
@@ -359,6 +386,19 @@ def run_backtest(
         except Exception as e:
             logger.warning(f"Indicator build failed at {now}: {e}")
             continue
+
+        ema_change_map = indicators.setdefault("ema10_change", {})
+        frame_map = {timeframe: df, **price_frames}
+
+        for tf, frame in frame_map.items():
+            if frame.empty:
+                continue
+
+            ema_delta = _ema10_change_from_frame(frame, tf, reference)
+            if ema_delta is None or math.isnan(ema_delta):
+                continue
+
+            ema_change_map[tf] = ema_delta
 
         # === PRICE RECONSTRUCTION (price-free system) ===
         if "close" in bar:

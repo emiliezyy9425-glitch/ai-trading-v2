@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, date, timedelta
 from typing import Optional, Sequence
 
 import pandas as pd
@@ -72,13 +72,16 @@ _MAX_CONCURRENT_REQUESTS = 25
 
 
 async def _fetch_bars(
-    ib: IB, contract: Stock, semaphore: asyncio.Semaphore
+    ib: IB,
+    contract: Stock,
+    semaphore: asyncio.Semaphore,
+    duration_str: str = "30 D",
 ) -> tuple[Stock, Sequence]:
     async with semaphore:
         bars = await ib.reqHistoricalDataAsync(
             contract,
             endDateTime="",
-            durationStr="30 D",
+            durationStr=duration_str,
             barSizeSetting="1 day",
             whatToShow="TRADES",
             useRTH=True,
@@ -161,6 +164,115 @@ async def calculate_s5tw_ibkr(ib: IB) -> float:
     return percentage
 
 
+async def calculate_s5tw_history_ibkr(
+    ib: IB,
+    start_date: date,
+    end_date: date,
+    *,
+    pad_days: int = 25,
+) -> pd.Series:
+    """Build a daily history of S5TW breadth using IBKR data.
+
+    Args:
+        ib: Active IBKR connection.
+        start_date: Inclusive start ``date`` for the history.
+        end_date: Inclusive end ``date`` for the history.
+        pad_days: Extra lookback days to seed the 20-day SMA.
+
+    Returns:
+        pandas.Series indexed by ``date`` with percentage values.
+    """
+
+    if start_date > end_date:
+        raise ValueError("start_date must be on or before end_date")
+
+    if ib is None or not ib.isConnected():
+        raise RuntimeError("IBKR connection required for breadth history")
+
+    pad_start = start_date - timedelta(days=pad_days)
+    duration_days = max((end_date - pad_start).days + 1, 30)
+
+    logger.info(
+        "Calculating historical S5TW from %s to %s (%d days window)...",
+        start_date,
+        end_date,
+        duration_days,
+    )
+
+    normalized_symbols = []
+    for ticker in SP500_TICKERS:
+        if ticker in DOT_TICKER_MAP:
+            normalized_symbols.append(DOT_TICKER_MAP[ticker])
+        elif "." in ticker:
+            normalized_symbols.append(ticker.replace(".", " "))
+        else:
+            normalized_symbols.append(ticker)
+
+    contracts = [Stock(symbol, "SMART", "USD") for symbol in normalized_symbols]
+    await ib.qualifyContractsAsync(*contracts)
+
+    semaphore = asyncio.Semaphore(_MAX_CONCURRENT_REQUESTS)
+    tasks = [
+        _fetch_bars(
+            ib,
+            contract,
+            semaphore,
+            duration_str=f"{duration_days} D",
+        )
+        for contract in contracts
+    ]
+
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    totals: dict[date, int] = {}
+    above: dict[date, int] = {}
+
+    for result in results:
+        if isinstance(result, Exception):
+            logger.debug("Skipping S5TW contract due to error: %s", result)
+            continue
+
+        contract, bars = result
+        if not bars or len(bars) < 21:
+            continue
+
+        df = pd.DataFrame(b.__dict__ for b in bars)
+        if df.empty or "close" not in df.columns or "date" not in df.columns:
+            continue
+
+        df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date
+        df = df.dropna(subset=["date", "close"])
+        df = df[(df["date"] >= pad_start) & (df["date"] <= end_date)]
+        if df.empty:
+            continue
+
+        df["sma20"] = df["close"].rolling(20).mean()
+        df["above"] = df["close"] > df["sma20"]
+
+        for row in df.itertuples():
+            current_date: date = row.date
+            if current_date < start_date or current_date > end_date:
+                continue
+            if pd.isna(row.sma20):
+                continue
+
+            totals[current_date] = totals.get(current_date, 0) + 1
+            if row.above:
+                above[current_date] = above.get(current_date, 0) + 1
+
+    if not totals:
+        raise RuntimeError("No valid breadth data returned from IBKR for requested range")
+
+    data = {}
+    for d in sorted(totals):
+        pct = (above.get(d, 0) / totals[d]) * 100
+        data[d] = round(pct, 2)
+
+    series = pd.Series(data, name="sp500_above_20d")
+    logger.info("Historical S5TW ready with %d data points", len(series))
+    return series
+
+
 def get_sp500_above_20d(ib: Optional[IB] = None) -> tuple[float, None, None]:
     """Maintain backward compatibility with legacy callers."""
 
@@ -174,3 +286,18 @@ def get_sp500_above_20d(ib: Optional[IB] = None) -> tuple[float, None, None]:
     except Exception as exc:  # pragma: no cover - network/IBKR errors
         logger.error("S5TW calculation failed via IBKR: %s", exc)
         return 50.0, None, None
+
+
+def calculate_s5tw_history_ibkr_sync(
+    ib: IB, start_date: date, end_date: date, *, pad_days: int = 25
+) -> pd.Series:
+    """Synchronous wrapper around :func:`calculate_s5tw_history_ibkr`."""
+
+    return ib.run(
+        calculate_s5tw_history_ibkr(
+            ib,
+            start_date=start_date,
+            end_date=end_date,
+            pad_days=pad_days,
+        )
+    )

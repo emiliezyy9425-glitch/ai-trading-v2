@@ -16,7 +16,11 @@ from scripts.generate_historical_data import (
 )
 from self_learn import FEATURE_NAMES
 from feature_engineering import add_golden_price_features
-from ml_predictor import predict_with_all_models, independent_model_decisions as ensemble_vote
+from ml_predictor import (
+    FEATURE_ALIASES,
+    predict_with_all_models,
+    independent_model_decisions as ensemble_vote,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(message)s", datefmt="%H:%M:%S")
 log = logging.getLogger(__name__)
@@ -93,16 +97,16 @@ def load_latest_features(ticker: str):
     features = _finalise_feature_frame(recent, ticker, start=None, end=None)
     features = add_golden_price_features(features)
 
-    duplicate_maps = {
-        "bb_position_1h.1": "bb_position_1h",
-        "price_z_120h.1": "price_z_120h",
-        "ret_1h.1": "ret_1h",
-        "ret_4h.1": "ret_4h",
-        "ret_24h.1": "ret_24h",
-    }
-    for dup, src in duplicate_maps.items():
-        if dup not in features.columns and src in features.columns:
-            features[dup] = features[src]
+    for alias, source in FEATURE_ALIASES.items():
+        if source not in features.columns:
+            continue
+
+        if alias not in features.columns:
+            features[alias] = features[source]
+        else:
+            needs_fill = features[alias].isna() | (features[alias] == 0)
+            if needs_fill.any():
+                features.loc[needs_fill, alias] = features.loc[needs_fill, source]
 
     # Restore index and close price
     features.index = original_index[-len(features):]

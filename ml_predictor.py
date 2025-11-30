@@ -32,6 +32,10 @@ LOG_DIR.mkdir(exist_ok=True)
 
 # Minimum confidence required for each model to trigger a trade
 MODEL_CONFIDENCE_THRESHOLDS: dict[str, float] = {
+    "RandomForest": 0.80,
+    "XGBoost": 0.78,
+    "LightGBM": 0.76,
+    "PPO": 0.85,
     "LSTM": 0.985,
     "Transformer": 0.982,
 }
@@ -132,6 +136,42 @@ def _prepare_feature_frame(df: pd.DataFrame, columns: List[str]) -> pd.DataFrame
     if scaler is None:
         return ordered.astype(float).reindex(columns=columns, fill_value=0)
 
+# Generic loader for joblib-persisted tabular models (RF/XGB/LGB).
+def _load_joblib_model(path: Path, name: str):
+    if not path.exists():
+        return None, f"{name} missing"
+    try:
+        model = load(path)
+        return model, None
+    except Exception as exc:  # pragma: no cover - defensive logging
+        return None, f"{name} load_error: {exc}"
+
+
+def _predict_tabular_model(df: pd.DataFrame, name: str, path: Path) -> Tuple[np.ndarray, np.ndarray]:
+    model, err = _load_joblib_model(path, name)
+    if err:
+        logging.warning(err)
+        return np.array([]), np.array([])
+
+    try:
+        cols = list(getattr(model, "feature_names_in_", FEATURE_NAMES))
+        feature_df = _prepare_feature_frame(df, cols)
+        row = feature_df.tail(1).astype(float).values
+
+        if hasattr(model, "predict_proba"):
+            probs = model.predict_proba(row)[:, 1]
+        else:
+            preds = model.predict(row)
+            probs = np.asarray(preds, dtype=float)
+            if probs.max() > 1 or probs.min() < 0:
+                probs = 1 / (1 + np.exp(-probs))
+
+        decisions = (probs > 0.5).astype(int)
+        return probs, decisions
+    except Exception as exc:
+        logging.error(f"{name} predict error: {exc}")
+        return np.array([]), np.array([])
+
     try:
         ordered_for_scaler = ordered.reindex(columns=scaler_cols, fill_value=0)
         scaled_values = scaler.transform(ordered_for_scaler.astype(float))
@@ -145,6 +185,10 @@ def _prepare_feature_frame(df: pd.DataFrame, columns: List[str]) -> pd.DataFrame
 
 # Canonical list of ensemble model names used across the trading stack.
 MODEL_NAMES: tuple[str, ...] = (
+    "RandomForest",
+    "XGBoost",
+    "LightGBM",
+    "PPO",
     "LSTM",
     "Transformer",
 )
@@ -286,6 +330,21 @@ def _ensure_dataframe(data: object) -> pd.DataFrame:
         return pd.DataFrame(data)
     except Exception:
         return pd.DataFrame([data])
+
+
+def predict_random_forest(df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
+    df = _ensure_dataframe(df)
+    return _predict_tabular_model(df, "RandomForest", MODEL_DIR / "rf_latest.joblib")
+
+
+def predict_xgboost(df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
+    df = _ensure_dataframe(df)
+    return _predict_tabular_model(df, "XGBoost", MODEL_DIR / "xgb_latest.joblib")
+
+
+def predict_lightgbm(df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
+    df = _ensure_dataframe(df)
+    return _predict_tabular_model(df, "LightGBM", MODEL_DIR / "lgb_latest.joblib")
 
 
 def predict_lstm(df: pd.DataFrame, seq_len: Optional[int] = None) -> Tuple[np.ndarray, np.ndarray]:
@@ -591,6 +650,22 @@ def predict_with_all_models(df: pd.DataFrame, seq_len: int = 60) -> Dict[str, Tu
 
     results: Dict[str, Tuple[np.ndarray, np.ndarray]] = {}
 
+    probs, dec = predict_random_forest(df)
+    if len(probs):
+        results["RandomForest"] = (probs, dec)
+
+    probs, dec = predict_xgboost(df)
+    if len(probs):
+        results["XGBoost"] = (probs, dec)
+
+    probs, dec = predict_lightgbm(df)
+    if len(probs):
+        results["LightGBM"] = (probs, dec)
+
+    probs, dec = predict_ppo(df)
+    if len(probs):
+        results["PPO"] = (probs, dec)
+
     # Sequence models
     probs, dec = predict_lstm(df, seq_len=seq_len)
     if len(probs):
@@ -626,10 +701,7 @@ def independent_model_decisions(predictions: Dict[str, Tuple[np.ndarray, np.ndar
         "confidence": 0.0,
     }
 
-    ordered_models = [
-        "LSTM",
-        "Transformer",
-    ]
+    ordered_models = list(MODEL_NAMES)
 
     thresholds_lookup = MODEL_CONFIDENCE_THRESHOLDS.copy()
     if model_thresholds:

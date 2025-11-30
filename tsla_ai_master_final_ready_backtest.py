@@ -72,6 +72,7 @@ def run_backtest(
     start_date: str = "2024-01-01",
     end_date: str | None = None,
     timeframe: str = "1 hour",
+    client_id: int | None = None,
 ):
     if end_date is None:
         end_date = datetime.utcnow().strftime("%Y-%m-%d")
@@ -80,6 +81,8 @@ def run_backtest(
     end_dt = datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=timezone.utc) + timedelta(days=1)
 
     logger.info(f"Starting EXACT-MATCH backtest: {ticker} | {start_date} → {end_date} | {timeframe}")
+
+    base_client_id = client_id or int(os.getenv("IBKR_BACKTEST_CLIENT_ID", "200"))
 
     def _load_raw_bars_from_disk() -> pd.DataFrame:
         raw_dir = Path(PROJECT_ROOT) / "data" / "lake" / "raw" / ticker / timeframe.replace(" ", "_")
@@ -115,7 +118,7 @@ def run_backtest(
         """Connect to IBKR and download historical bars when local data is missing."""
 
         try:
-            ib = live_trading.connect_ibkr(max_retries=1)
+            ib = live_trading.connect_ibkr(max_retries=1, initial_client_id=base_client_id)
         except Exception as exc:  # pragma: no cover - defensive logging
             logger.warning("IBKR connection attempt failed: %s", exc)
             return pd.DataFrame()
@@ -160,7 +163,9 @@ def run_backtest(
     s5tw_history = pd.Series(dtype=float)
 
     try:
-        ib_for_breadth = live_trading.connect_ibkr(max_retries=1)
+        ib_for_breadth = live_trading.connect_ibkr(
+            max_retries=1, initial_client_id=base_client_id
+        )
     except Exception as exc:  # pragma: no cover - defensive logging
         logger.warning("IBKR connection for breadth history failed: %s", exc)
         ib_for_breadth = None
@@ -369,6 +374,12 @@ def main():
     parser.add_argument("--start-date", default="2024-01-01")
     parser.add_argument("--end-date", default=None)
     parser.add_argument("--timeframe", default="1 hour", choices=["1 hour", "4 hours", "1 day"])
+    parser.add_argument(
+        "--client-id",
+        type=int,
+        default=None,
+        help="Base IBKR client id to avoid conflicts (defaults to 200 or IBKR_BACKTEST_CLIENT_ID env).",
+    )
     args = parser.parse_args()
 
     run_backtest(
@@ -376,6 +387,7 @@ def main():
         start_date=args.start_date,
         end_date=args.end_date,
         timeframe=args.timeframe,
+        client_id=args.client_id,
     )
 
 

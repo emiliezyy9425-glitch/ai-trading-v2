@@ -119,6 +119,7 @@ REQUIRED_FEATURE_COLUMNS: tuple[str, ...] = (
 class Position:
     entry_price: float
     timestamp: datetime
+    direction: int  # +1 for long, -1 for short
 
 
 @contextmanager
@@ -483,26 +484,41 @@ def run_backtest(
         decision, detail = _live_ensemble_decision(
             predictions,
             return_details=True,
-            current_position=0.0 if position is None else 1.0,
+            current_position=0.0 if position is None else float(position.direction),
             prev_row={},
             ppo_metadata=None,
         )
 
         # Handle position logic
-        executed = False
+        signal_triggered = decision != "Hold"
+        trade_filled = False
         pnl = 0.0
         result = "HOLD"
 
-        if decision == "Buy" and position is None:
-            position = Position(entry_price=price, timestamp=now)
-            executed = True
-            result = "ENTRY"
-        elif decision == "Sell" and position is not None:
-            pnl = price - position.entry_price
-            result = "WIN" if pnl > 0 else "LOSS" if pnl < 0 else "FLAT"
-            executed = True
-            equity_curve.append(pnl)
-            position = None
+        if decision == "Buy":
+            if position is None:
+                position = Position(entry_price=price, timestamp=now, direction=1)
+                trade_filled = True
+                result = "ENTRY_LONG"
+            elif position.direction == -1:
+                pnl = position.entry_price - price
+                result = "WIN" if pnl > 0 else "LOSS" if pnl < 0 else "FLAT"
+                trade_filled = True
+                equity_curve.append(pnl)
+                position = Position(entry_price=price, timestamp=now, direction=1)
+                result = f"{result}_FLIP_LONG"
+        elif decision == "Sell":
+            if position is None:
+                position = Position(entry_price=price, timestamp=now, direction=-1)
+                trade_filled = True
+                result = "ENTRY_SHORT"
+            elif position.direction == 1:
+                pnl = price - position.entry_price
+                result = "WIN" if pnl > 0 else "LOSS" if pnl < 0 else "FLAT"
+                trade_filled = True
+                equity_curve.append(pnl)
+                position = Position(entry_price=price, timestamp=now, direction=-1)
+                result = f"{result}_FLIP_SHORT"
 
         # Human-readable summaries
         tds_summary = f"{indicators['tds_trend'].get(timeframe, 0)}/{indicators['tds_signal'].get(timeframe, 0)}"
@@ -574,7 +590,8 @@ def run_backtest(
             "decision": decision.upper(),
             "result": result,
             "pnl": round(pnl, 3),
-            "executed": "Yes" if executed else "No",
+            "executed": "Yes" if signal_triggered else "No",
+            "trade_filled": "Yes" if trade_filled else "No",
 
             # Ensemble
             "ensemble_reason": detail.get("reason", ""),

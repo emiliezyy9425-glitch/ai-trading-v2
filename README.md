@@ -12,6 +12,8 @@ connection is unavailable, this metric now falls back to the official TradingVie
 
 ## AI Agent Workflow
 
+See `docs/workflow_diagram.md` for a visual end-to-end workflow diagram that connects the data, training, inference, and trading components.
+
 1. **Collect market data** – fetch recent bars directly from Interactive Brokers for the watched equities.
 2. **Compute indicators** – derive RSI, MACD, Bollinger Bands, Fibonacci levels, volume signals, and other features via `indicators.py` for 1h/4h/1d windows.
 3. **Generate model inputs** – align the live features to the `FEATURE_NAMES` schema used during training.

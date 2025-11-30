@@ -31,7 +31,7 @@ LOG_DIR = PROJECT_ROOT / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 
 # Minimum confidence required for each model to trigger a trade (legacy thresholds
-# kept for backward compatibility; the live ensemble below uses ENSEMBLE_THRESHOLDS).
+# kept for backward compatibility; live decisions now use UNIVERSAL_CONFIDENCE_THRESHOLD).
 MODEL_CONFIDENCE_THRESHOLDS: dict[str, float] = {
     "RandomForest": 0.80,
     "XGBoost": 0.78,
@@ -55,18 +55,8 @@ FEATURE_ALIASES: dict[str, str] = {
     "ret_24h.1": "ret_24h",
 }
 
-# Confidence threshold that forces a hold when high-confidence models disagree
-HIGH_CONFIDENCE_DISAGREEMENT_THRESHOLD = 0.98
-
-# Live-trading ensemble thresholds (battle-tested May–Nov 2025)
-ENSEMBLE_THRESHOLDS: dict[str, float] = {
-    "rf": 0.825,
-    "xgb": 0.945,
-    "lgb": 0.825,
-    "lstm": 0.99,
-    "transformer": 0.985,
-    "ppo": 0.80,
-}
+# Confidence threshold used by the simplified universal decision helper
+UNIVERSAL_CONFIDENCE_THRESHOLD = 0.85
 
 
 def _resolve_scaler_path() -> Optional[Path]:
@@ -850,68 +840,69 @@ def _get_row_value(row: Mapping, key: str, default=None):
         return default
 
 
-def get_ensemble_signal(row):
-    votes = []
-    confs = {}
+MODEL_KEY_MAP: dict[str, str] = {
+    "rf": "RandomForest",
+    "xgb": "XGBoost",
+    "lgb": "LightGBM",
+    "lstm": "LSTM",
+    "transformer": "Transformer",
+}
 
-    if (_get_row_value(row, "rf_conf", 0.0) >= ENSEMBLE_THRESHOLDS["rf"]):
-        vote = _get_row_value(row, "rf_vote")
-        if vote:
-            votes.append(vote)
-            confs["rf"] = _get_row_value(row, "rf_conf", 0.0)
 
-    if (_get_row_value(row, "xgb_conf", 0.0) >= ENSEMBLE_THRESHOLDS["xgb"]):
-        vote = _get_row_value(row, "xgb_vote")
-        if vote:
-            votes.append(vote)
-            confs["xgb"] = _get_row_value(row, "xgb_conf", 0.0)
+def _flatten_probs(predictions: Mapping, model_key: str) -> np.ndarray:
+    try:
+        probs = predictions.get(model_key, (np.array([]),))[0]
+    except Exception:
+        probs = np.array([])
+    try:
+        return np.asarray(probs).flatten()
+    except Exception:
+        return np.array([])
 
-    if (_get_row_value(row, "lgb_conf", 0.0) >= ENSEMBLE_THRESHOLDS["lgb"]):
-        vote = _get_row_value(row, "lgb_vote")
-        if vote:
-            votes.append(vote)
-            confs["lgb"] = _get_row_value(row, "lgb_conf", 0.0)
 
-    if (_get_row_value(row, "lstm_conf", 0.0) >= ENSEMBLE_THRESHOLDS["lstm"]):
-        vote = _get_row_value(row, "lstm_vote")
-        if vote:
-            votes.append(vote)
-            confs["lstm"] = _get_row_value(row, "lstm_conf", 0.0)
+def _model_confidence(predictions: Mapping, model_key: str) -> float:
+    probs = _flatten_probs(predictions, model_key)
+    if probs.size > 1:
+        return float(probs[1])
+    if probs.size == 1:
+        return float(probs[0])
+    return 0.0
 
-    if (_get_row_value(row, "transformer_conf", 0.0) >= ENSEMBLE_THRESHOLDS["transformer"]):
-        vote = _get_row_value(row, "transformer_vote")
-        if vote:
-            votes.append(vote)
-            confs["transformer"] = _get_row_value(row, "transformer_conf", 0.0)
 
-    if (_get_row_value(row, "ppo_conf", 0.0) >= ENSEMBLE_THRESHOLDS["ppo"]):
-        vote = _get_row_value(row, "ppo_vote")
-        if vote:
-            votes.append(vote)
-            confs["ppo"] = _get_row_value(row, "ppo_conf", 0.0)
+def _model_buy_probability(predictions: Mapping, model_key: str) -> float:
+    probs = _flatten_probs(predictions, model_key)
+    return float(probs[0]) if probs.size else 0.0
 
-    if len(votes) < 3:
-        return "HOLD", 0.0, votes, confs
 
-    buy_count = votes.count("Buy")
-    sell_count = votes.count("Sell")
-    majority = "Buy" if buy_count > sell_count else "Sell" if sell_count > buy_count else "HOLD"
+def _model_vote(predictions: Mapping, model_key: str) -> str:
+    buy_prob = _model_buy_probability(predictions, model_key)
+    if buy_prob > 0.5:
+        return "Buy"
+    if buy_prob < 0.5:
+        return "Sell"
+    return "Hold"
 
-    if majority == "HOLD":
-        return "HOLD", 0.0, votes, confs
 
-    nuclear_ok = False
-    if (
-        ("xgb" in confs and confs["xgb"] >= 0.94 and _get_row_value(row, "xgb_vote") == majority)
-        or ("lstm" in confs and confs["lstm"] >= 0.99 and _get_row_value(row, "lstm_vote") == majority)
-    ):
-        nuclear_ok = True
+def universal_decision(predictions: dict) -> str:
+    confidences = {k: _model_confidence(predictions, v) for k, v in MODEL_KEY_MAP.items()}
+    best_model = max(confidences, key=confidences.get) if confidences else None
 
-    if not nuclear_ok:
-        return "HOLD", 0.0, votes, confs
+    if best_model and confidences[best_model] >= UNIVERSAL_CONFIDENCE_THRESHOLD:
+        prob = _model_buy_probability(predictions, MODEL_KEY_MAP[best_model])
+        return "Buy" if prob > 0.5 else "Sell"
+    return "HOLD"
 
-    avg_conf = np.mean([confs[k] for k, v in confs.items() if _get_row_value(row, f"{k}_vote") == majority])
-    return majority, float(avg_conf), votes, confs
+
+def _collect_votes_and_confidences(predictions: Mapping) -> tuple[dict[str, str], dict[str, float], Optional[str]]:
+    votes: dict[str, str] = {}
+    confidences: dict[str, float] = {}
+
+    for short, model_name in MODEL_KEY_MAP.items():
+        votes[short] = _model_vote(predictions, model_name)
+        confidences[short] = _model_confidence(predictions, model_name)
+
+    best_model = max(confidences, key=confidences.get) if confidences else None
+    return votes, confidences, best_model
 
 
 def get_position_size_and_actions(row, prev_row, current_signal, current_position):
@@ -975,7 +966,7 @@ def _build_live_row(predictions: Dict[str, Tuple[np.ndarray, np.ndarray]], ppo_m
         detail["confidences"][model_name] = conf
         row[f"{short}_vote"] = vote
         row[f"{short}_conf"] = conf
-        if conf >= ENSEMBLE_THRESHOLDS.get(short, 1.0) and vote != "Hold":
+        if conf >= UNIVERSAL_CONFIDENCE_THRESHOLD and vote != "Hold":
             detail["qualified"].append(model_name)
 
     ppo_action = None
@@ -1005,7 +996,10 @@ def _live_ensemble_decision(
     ppo_metadata: Optional[Mapping],
 ):
     row, detail = _build_live_row(predictions, ppo_metadata)
-    signal, ensemble_conf, votes, confs = get_ensemble_signal(row)
+    signal = universal_decision(predictions)
+    votes, confs, best_model = _collect_votes_and_confidences(predictions)
+    best_conf = confs.get(best_model, 0.0) if best_model else 0.0
+    best_name = MODEL_KEY_MAP.get(best_model, "") if best_model else ""
 
     prev_row = prev_row or {}
     target_size, allow_pyramid, early_exit = get_position_size_and_actions(
@@ -1023,27 +1017,26 @@ def _live_ensemble_decision(
     detail.update(
         {
             "ensemble_signal": signal,
-            "ensemble_confidence": ensemble_conf,
-            "qualified_models": list(confs.keys()),
-            "votes_sequence": votes,
+            "ensemble_confidence": best_conf,
+            "qualified_models": [best_name] if best_conf >= UNIVERSAL_CONFIDENCE_THRESHOLD else [],
+            "votes_sequence": list(votes.values()),
             "pyramid_allowed": allow_pyramid,
             "early_exit": early_exit,
             "position_size": position_size,
             "target_size": target_size,
-            "thresholds": ENSEMBLE_THRESHOLDS,
+            "thresholds": {k: UNIVERSAL_CONFIDENCE_THRESHOLD for k in MODEL_KEY_MAP},
+            "votes": votes,
+            "confidences": confs,
         }
     )
 
-    if len(votes) < 3:
-        detail["reason"] = "Less than 3 qualified models — HOLD"
-    elif signal == "HOLD" and votes:
-        detail["reason"] = "Majority tie — HOLD"
-    elif signal == "HOLD":
-        detail["reason"] = "Nuclear confirmation failed — HOLD"
-    else:
+    if signal == "HOLD":
         detail["reason"] = (
-            f"Majority {signal} with nuclear confirmation; avg_conf={ensemble_conf:.3f}"
+            f"No model met {UNIVERSAL_CONFIDENCE_THRESHOLD:.2f} confidence"
+            f" (best: {best_name or 'n/a'} {best_conf:.3f})"
         )
+    else:
+        detail["reason"] = f"{best_name} led decision at {best_conf:.3f}"
 
     final = signal if signal != "HOLD" else "Hold"
     if return_details:
@@ -1051,74 +1044,34 @@ def _live_ensemble_decision(
     return final
 
 
-NUCLEAR_XGB = 0.94
-NUCLEAR_LSTM = 0.99
-
 def independent_model_decisions(predictions: Dict, return_details: bool = False):
+    votes, confidences, best_model = _collect_votes_and_confidences(predictions)
+    best_conf = confidences.get(best_model, 0.0) if best_model else 0.0
+    best_name = MODEL_KEY_MAP.get(best_model, "") if best_model else ""
+    decision = universal_decision(predictions)
+
     detail = {
-        "votes": {},
-        "confidences": {},
-        "thresholds": ENSEMBLE_THRESHOLDS.copy(),
-        "triggers": [],
-        "missing": {},
+        "votes": votes,
+        "confidences": confidences,
+        "thresholds": {k: UNIVERSAL_CONFIDENCE_THRESHOLD for k in MODEL_KEY_MAP},
+        "reason": (
+            f"{best_name} led with {best_conf:.3f}" if decision != "HOLD" else (
+                f"No model met {UNIVERSAL_CONFIDENCE_THRESHOLD:.2f} confidence"
+                f" (best: {best_name or 'n/a'} {best_conf:.3f})"
+            )
+        ),
     }
 
-    # Step 1: Collect only models that beat their personal threshold
-    qualified = []
-    for name, (probs, extra) in predictions.items():
-        if name not in ENSEMBLE_THRESHOLDS:
-            continue
-        thresh = ENSEMBLE_THRESHOLDS[name]
+    if "PPO" in predictions:
+        ppo_probs, ppo_extra = predictions["PPO"]
+        detail["ppo_action"] = int(ppo_extra.get("action", 1)) if hasattr(ppo_extra, "get") else 1
+        detail["ppo_value"] = float(ppo_extra.get("value", 0.0)) if hasattr(ppo_extra, "get") else 0.0
+        detail["ppo_entropy"] = float(ppo_extra.get("entropy", 0.3)) if hasattr(ppo_extra, "get") else 0.3
+        detail["ppo_value_ma100"] = float(ppo_extra.get("value_ma100", 0.0)) if hasattr(ppo_extra, "get") else 0.0
+        detail["ppo_value_std100"] = float(ppo_extra.get("value_std100", 0.5)) if hasattr(ppo_extra, "get") else 0.5
 
-        if probs is None or len(probs) == 0:
-            detail["missing"][name] = "no prediction"
-            continue
-
-        prob = float(np.mean([p for p in probs if np.isfinite(p) and p != 0]) or 0.5)
-        decision = "Buy" if prob > 0.5 else "Sell" if prob < 0.5 else "Hold"
-        confidence = prob if decision == "Buy" else 1 - prob
-
-        detail["votes"][name] = decision
-        detail["confidences"][name] = confidence
-
-        if confidence >= thresh and decision != "Hold":
-            qualified.append((name, decision, confidence))
-
-    if len(qualified) < 3:
-        final = "Hold"
-        detail["reason"] = f"Only {len(qualified)} models qualified (<3)"
-        return (final, detail) if return_details else final
-
-    # Step 2: Majority vote
-    votes = [dec for _, dec, _ in qualified]
-    majority = "Buy" if votes.count("Buy") > votes.count("Sell") else "Sell"
-
-    # Step 3: NUCLEAR CONFIRMATION — at least one XGBoost ≥0.94 or LSTM ≥0.99 must agree
-    nuclear_ok = False
-    for name, dec, conf in qualified:
-        if name == "xgb" and conf >= NUCLEAR_XGB and dec == majority:
-            nuclear_ok = True
-        if name == "lstm" and conf >= NUCLEAR_LSTM and dec == majority:
-            nuclear_ok = True
-    if not nuclear_ok:
-        final = "Hold"
-        detail["reason"] = "No nuclear confirmation (XGB≥0.94 or LSTM≥0.99)"
-        return (final, detail) if return_details else final
-
-    avg_conf = np.mean([conf for _, dec, conf in qualified if dec == majority])
-    detail["reason"] = f"≥3 qualified + nuclear confirmed → {majority}"
-    detail["confidence"] = float(avg_conf)
-
-    # Attach PPO data for live script (pyramiding & early exit)
-    if "ppo" in predictions:
-        ppo_probs, ppo_extra = predictions["ppo"]
-        detail["ppo_action"] = int(ppo_extra.get("action", 1))      # 0=reduce, 1=hold, 2=aggressive
-        detail["ppo_value"] = float(ppo_extra.get("value", 0.0))
-        detail["ppo_entropy"] = float(ppo_extra.get("entropy", 0.3))
-        detail["ppo_value_ma100"] = float(ppo_extra.get("value_ma100", 0.0))
-        detail["ppo_value_std100"] = float(ppo_extra.get("value_std100", 0.5))
-
-    return (majority, detail) if return_details else majority
+    final = decision if decision != "HOLD" else "Hold"
+    return (final, detail) if return_details else final
 
 
 # ------------------------------------------------------------------

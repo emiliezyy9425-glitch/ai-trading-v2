@@ -120,6 +120,16 @@ class Position:
     entry_price: float
     timestamp: datetime
     direction: int  # +1 for long, -1 for short
+    size: int = 1
+
+    def add(self, price: float, timestamp: datetime):
+        total_cost = (self.entry_price * self.size) + price
+        self.size += 1
+        self.entry_price = total_cost / self.size
+        self.timestamp = timestamp
+
+    def pnl(self, exit_price: float) -> float:
+        return (exit_price - self.entry_price) * self.size * self.direction
 
 
 @contextmanager
@@ -495,15 +505,23 @@ def run_backtest(
         pnl = 0.0
         result = "HOLD"
 
-        if decision == "Buy" and position is None:
-            position = Position(entry_price=price, timestamp=now)
-            trade_filled = True
-            result = "ENTRY"
+        trade_size = position.size if position is not None else 0
+
+        if decision == "Buy":
+            if position is None:
+                position = Position(entry_price=price, timestamp=now, direction=1)
+                trade_filled = True
+                result = "ENTRY"
+            elif position.direction == 1:
+                position.add(price, now)
+                trade_filled = True
+                result = "PYRAMID"
         elif decision == "Sell" and position is not None:
-            pnl = price - position.entry_price
+            pnl = position.pnl(price)
             result = "WIN" if pnl > 0 else "LOSS" if pnl < 0 else "FLAT"
             trade_filled = True
             equity_curve.append(pnl)
+            trade_size = position.size
             position = None
 
         # Human-readable summaries
@@ -566,6 +584,7 @@ def run_backtest(
         }
 
         # Write full audit trail
+        current_size = 0 if position is None else position.size
         write_trade_csv({
             "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
             "ticker": ticker,
@@ -576,6 +595,7 @@ def run_backtest(
             "decision": decision.upper(),
             "result": result,
             "pnl": round(pnl, 3),
+            "position_size": current_size if decision != "Sell" else trade_size,
             "executed": "Yes" if signal_triggered else "No",
             "trade_filled": "Yes" if trade_filled else "No",
 

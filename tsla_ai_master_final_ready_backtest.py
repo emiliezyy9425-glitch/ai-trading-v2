@@ -267,7 +267,6 @@ def run_backtest(
             position = None
 
         # Human-readable summaries
-        fib_summary = indicators["fib_summary"].get(timeframe, "")
         tds_summary = f"{indicators['tds_trend'].get(timeframe, 0)}/{indicators['tds_signal'].get(timeframe, 0)}"
         # TD Sequential summaries are already precomputed per timeframe in the indicator map
         td9_summary = indicators.get("td9_summary", {}).get(timeframe, "")
@@ -341,7 +340,6 @@ def run_backtest(
             "transformer_vote": trans_v, "transformer_conf": round(trans_c, 4),
 
             # Human summaries
-            "fib_summary": fib_summary,
             "tds_summary": tds_summary,
             "td9_summary": td9_summary,
             "rsi": round(indicators["rsi"].get(timeframe, 0), 2),

@@ -6,6 +6,7 @@ import argparse
 import csv
 import logging
 import os
+from collections import deque
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -21,6 +22,7 @@ from ml_predictor import predict_with_all_models, independent_model_decisions
 from indicators import summarize_td_sequential
 from sp500_above_20d import load_sp500_above_20d_history
 from sp500_breadth import calculate_s5tw_history_ibkr_sync
+from feature_engineering import default_feature_values
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(
@@ -32,6 +34,81 @@ logging.basicConfig(
 PROJECT_ROOT = os.getenv("PROJECT_ROOT", "/app")
 DATA_DIR = os.path.join(PROJECT_ROOT, "data")
 BACKTEST_TRADE_LOG_PATH = os.path.join(DATA_DIR, "trade_log_backtest.csv")
+FEATURE_SEQUENCE_WINDOW = 60
+PRICE_HISTORY_WINDOW = 200
+
+REQUIRED_FEATURE_COLUMNS: tuple[str, ...] = (
+    "bb_position_1h",
+    "ret_24h",
+    "price_z_120h",
+    "ret_4h",
+    "ret_1h",
+    "adx_1h",
+    "adx_4h",
+    "bb_position_1h.1",
+    "ema10_change_1d",
+    "ema10_change_1h",
+    "ema10_change_4h",
+    "ema10_dev_1d",
+    "ema10_dev_1h",
+    "ema10_dev_4h",
+    "macd_1d",
+    "macd_1h",
+    "macd_4h",
+    "macd_change_1d",
+    "macd_change_1h",
+    "macd_change_4h",
+    "pattern_bearish_engulfing_1d",
+    "pattern_bearish_engulfing_1h",
+    "pattern_bearish_engulfing_4h",
+    "pattern_bullish_engulfing_1d",
+    "pattern_bullish_engulfing_1h",
+    "pattern_bullish_engulfing_4h",
+    "pattern_evening_star_1d",
+    "pattern_evening_star_1h",
+    "pattern_evening_star_4h",
+    "pattern_hammer_1d",
+    "pattern_hammer_1h",
+    "pattern_hammer_4h",
+    "pattern_marubozu_bear_1d",
+    "pattern_marubozu_bear_1h",
+    "pattern_marubozu_bear_4h",
+    "pattern_marubozu_bull_1d",
+    "pattern_marubozu_bull_1h",
+    "pattern_marubozu_bull_4h",
+    "pattern_morning_star_1d",
+    "pattern_morning_star_1h",
+    "pattern_morning_star_4h",
+    "pattern_shooting_star_1d",
+    "pattern_shooting_star_1h",
+    "pattern_shooting_star_4h",
+    "price_above_ema10_1d",
+    "price_above_ema10_1h",
+    "price_above_ema10_4h",
+    "price_z_120h.1",
+    "ret_1h.1",
+    "ret_24h.1",
+    "ret_4h.1",
+    "rsi_1h",
+    "rsi_4h",
+    "rsi_change_1h",
+    "signal_1d",
+    "signal_1h",
+    "signal_4h",
+    "sp500_above_20d",
+    "stoch_d_1d",
+    "stoch_d_1h",
+    "stoch_d_4h",
+    "stoch_k_1d",
+    "stoch_k_1h",
+    "stoch_k_4h",
+    "td9_1d",
+    "td9_1h",
+    "td9_4h",
+    "zig_1d",
+    "zig_1h",
+    "zig_4h",
+)
 
 
 @dataclass
@@ -65,6 +142,74 @@ def write_trade_csv(row: dict):
             logger.info("Backtest trade log columns: %s", ", ".join(row.keys()))
             writer.writeheader()
         writer.writerow(row)
+
+
+def _align_feature_row(raw_features: pd.Series) -> pd.Series:
+    defaults = default_feature_values(REQUIRED_FEATURE_COLUMNS)
+    aligned = pd.Series(defaults)
+    for key, value in raw_features.items():
+        aligned[key] = value
+    return aligned.reindex(REQUIRED_FEATURE_COLUMNS, fill_value=0.0)
+
+
+def _compute_price_features(
+    price_history: deque[tuple[datetime, float]],
+    timestamp: datetime,
+    price: float,
+    bollinger: dict | None,
+    previous_features: pd.Series | None,
+) -> dict[str, float]:
+    """Return price-derived features using the same formulas as feature_engineering."""
+
+    price_history.append((timestamp, price))
+    if len(price_history) > PRICE_HISTORY_WINDOW:
+        price_history.popleft()
+
+    dates, prices = zip(*price_history)
+    price_series = pd.Series(prices, index=pd.DatetimeIndex(dates))
+
+    returns = np.log(price_series / price_series.shift(1))
+    ret_1h = returns.iloc[-1] if not returns.empty else np.nan
+    ret_4h = np.log(price_series.iloc[-1] / price_series.shift(4).iloc[-1]) if len(price_series) > 4 else np.nan
+    ret_24h = (
+        np.log(price_series.iloc[-1] / price_series.shift(24).iloc[-1])
+        if len(price_series) > 24
+        else np.nan
+    )
+
+    rolling_mean = price_series.rolling(window=120, min_periods=60).mean()
+    rolling_std = price_series.rolling(window=120, min_periods=60).std()
+    price_z = (price_series - rolling_mean) / rolling_std
+    price_z_value = price_z.iloc[-1] if not price_z.empty else np.nan
+
+    def _fallback(name: str, value: float | np.floating | None) -> float:
+        if value is None or not np.isfinite(float(value)):
+            if previous_features is not None:
+                prev = previous_features.get(name)
+                if pd.notna(prev):
+                    return float(prev)
+            return 0.0
+        return float(value)
+
+    upper = (bollinger or {}).get("upper")
+    lower = (bollinger or {}).get("lower")
+    bb_position = 0.0
+    if upper is not None and lower is not None:
+        bb_position = (price - lower) / (upper - lower + 1e-8)
+        bb_position = float(np.clip(bb_position, 0.0, 1.0))
+    else:
+        bb_position = _fallback("bb_position_1h", None)
+
+    price_z_value = _fallback("price_z_120h", price_z_value)
+    price_z_value = float(np.clip(price_z_value, -5.0, 5.0))
+
+    return {
+        "ret_1h": _fallback("ret_1h", ret_1h),
+        "ret_4h": _fallback("ret_4h", ret_4h),
+        "ret_24h": _fallback("ret_24h", ret_24h),
+        "price_z_120h": price_z_value,
+        "bb_position_1h": bb_position,
+    }
 
 
 def run_backtest(
@@ -197,6 +342,25 @@ def run_backtest(
 
     position: Position | None = None
     equity_curve = []
+    feature_history: deque[pd.Series] = live_trading.FEATURE_HISTORY[ticker]
+    price_history: deque[tuple[datetime, float]] = deque(maxlen=PRICE_HISTORY_WINDOW)
+    missing_feature_logged = False
+
+    if not feature_history:
+        try:
+            live_trading._seed_feature_history_from_historical_data(ticker, None)
+        except Exception as exc:  # pragma: no cover - defensive seeding
+            logger.warning("Feature history seed failed for %s: %s", ticker, exc)
+        feature_history = live_trading.FEATURE_HISTORY[ticker]
+
+    if feature_history:
+        logger.info(
+            "Seeded %d/%d feature rows before backtest loop.",
+            len(feature_history),
+            FEATURE_SEQUENCE_WINDOW,
+        )
+    else:
+        logger.info("No historical seed available; will backfill defaults to 60 rows.")
 
     # Trim to the requested window
     df = df[(df.index >= start_dt) & (df.index < end_dt)].sort_index()
@@ -215,7 +379,7 @@ def run_backtest(
             return timedelta(hours=4)
         return timedelta(hours=1)
 
-    for ts, _ in df.iterrows():
+    for bar_idx, (ts, bar) in enumerate(df.iterrows()):
         now = ts.to_pydatetime()
         reference = now + _timeframe_delta(timeframe)
 
@@ -231,12 +395,21 @@ def run_backtest(
             continue
 
         # === PRICE RECONSTRUCTION (price-free system) ===
-        if "ret_1h" in df.columns:
-            cum_ret = df["ret_1h"].iloc[:bar_idx + 1].sum()
+        if "close" in bar:
+            try:
+                price = float(bar["close"])
+            except (TypeError, ValueError):
+                price = float("nan")
+        elif "price_1h" in bar:
+            price = float(bar["price_1h"])
+        elif "ret_1h" in df.columns:
+            cum_ret = df["ret_1h"].iloc[: bar_idx + 1].sum()
             price = round(float(np.exp(cum_ret) * 100.0), 4)
         else:
             price = 100.0
         # ================================================
+        if not np.isfinite(price):
+            price = price_history[-1][1] if price_history else 100.0
         iv = indicators.get("iv", 50.0)
         delta = indicators.get("delta", 0.5)
         sp500_pct = indicators.get("sp500_above_20d", 50.0)
@@ -250,10 +423,54 @@ def run_backtest(
                     sp500_pct = float(historical.iloc[-1])
 
         # EXACT SAME FEATURE ROW AS LIVE TRADING
-        features = build_feature_row(indicators, price, iv, delta, sp500_pct)
-        features_df = pd.DataFrame([features])
+        previous_features = feature_history[-1] if feature_history else None
+        price_features = _compute_price_features(
+            price_history, now, price, indicators.get("bollinger", {}).get(timeframe), previous_features
+        )
+        raw_features = build_feature_row(
+            indicators, price, iv, delta, sp500_pct, previous_features=previous_features
+        )
+        raw_features.loc["ret_1h"] = price_features["ret_1h"]
+        raw_features.loc["ret_4h"] = price_features["ret_4h"]
+        raw_features.loc["ret_24h"] = price_features["ret_24h"]
+        raw_features.loc["price_z_120h"] = price_features["price_z_120h"]
+        raw_features.loc["price_z_120h.1"] = price_features["price_z_120h"]
+        raw_features.loc["ret_1h.1"] = price_features["ret_1h"]
+        raw_features.loc["ret_4h.1"] = price_features["ret_4h"]
+        raw_features.loc["ret_24h.1"] = price_features["ret_24h"]
+        raw_features.loc["bb_position_1h"] = price_features["bb_position_1h"]
+        raw_features.loc["bb_position_1h.1"] = price_features["bb_position_1h"]
 
-        predictions = predict_with_all_models(features_df)
+        # Surface any gaps between the live feature builder and the backtest requirements
+        missing_cols = [
+            col for col in REQUIRED_FEATURE_COLUMNS if col not in raw_features.index
+        ]
+        if missing_cols and not missing_feature_logged:
+            logger.info(
+                "Backtest feature row missing %d/%d columns; filling with feature_engineering defaults: %s",
+                len(missing_cols),
+                len(REQUIRED_FEATURE_COLUMNS),
+                ", ".join(missing_cols),
+            )
+            missing_feature_logged = True
+
+        aligned_features = _align_feature_row(raw_features)
+        feature_history.append(aligned_features)
+
+        sequence_df = pd.DataFrame(feature_history).reindex(
+            columns=REQUIRED_FEATURE_COLUMNS, fill_value=0.0
+        )
+        if len(sequence_df) < FEATURE_SEQUENCE_WINDOW:
+            padding_needed = FEATURE_SEQUENCE_WINDOW - len(sequence_df)
+            padding = pd.DataFrame(
+                [default_feature_values(REQUIRED_FEATURE_COLUMNS)] * padding_needed
+            )
+            sequence_df = pd.concat([padding, sequence_df], ignore_index=True)
+        sequence_df.index = pd.date_range(
+            end=now, periods=len(sequence_df), freq=_timeframe_delta(timeframe)
+        )
+
+        predictions = predict_with_all_models(sequence_df, seq_len=FEATURE_SEQUENCE_WINDOW)
         decision, detail = independent_model_decisions(predictions, return_details=True)
 
         # Handle position logic
@@ -319,7 +536,9 @@ def run_backtest(
             except Exception:
                 return str(val)
 
-        feature_logs = {f"feature_{k}": _serialize_feature_value(v) for k, v in features.items()}
+        feature_logs = {
+            f"feature_{k}": _serialize_feature_value(v) for k, v in aligned_features.items()
+        }
 
         # Write full audit trail
         write_trade_csv({

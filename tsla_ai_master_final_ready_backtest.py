@@ -394,7 +394,12 @@ def run_backtest(
             if frame.empty:
                 continue
 
-            ema_delta = _ema10_change_from_frame(frame, tf, reference)
+            last_completed = frame.index[frame.index <= now]
+            if last_completed.empty:
+                continue
+
+            cutoff = last_completed[-1].to_pydatetime()
+            ema_delta = _ema10_change_from_frame(frame, tf, cutoff)
             if ema_delta is None or math.isnan(ema_delta):
                 continue
 

@@ -198,7 +198,28 @@ def run_backtest(
         merged.index = pd.to_datetime(merged.index, utc=True)
         return merged.sort_index()
 
-    def _download_missing_bars_from_ibkr() -> pd.DataFrame:
+    def _load_backtest_bars(tf: str) -> pd.DataFrame:
+        """Fetch OHLCV data for a timeframe with curated → raw → IBKR fallbacks."""
+
+        curated = live_trading.load_curated_bars(ticker, tf)
+        if not curated.empty:
+            return curated
+
+        raw = _load_raw_bars_from_disk(tf)
+        if not raw.empty:
+            logger.info("Using raw %s bars for %s because curated data is missing.", tf, ticker)
+            return raw
+
+        downloaded = _download_missing_bars_from_ibkr(tf)
+        if not downloaded.empty:
+            logger.info(
+                "Downloaded %s bars from IBKR for %s because curated/raw data was unavailable.",
+                tf,
+                ticker,
+            )
+        return downloaded
+
+    def _download_missing_bars_from_ibkr(tf: str = timeframe) -> pd.DataFrame:
         """Connect to IBKR and download historical bars when local data is missing."""
 
         try:
@@ -215,12 +236,12 @@ def run_backtest(
             logger.info(
                 "Attempting IBKR download for %s (%s) because curated/raw data is missing...",
                 ticker,
-                timeframe,
+                tf,
             )
-            df = live_trading.get_historical_data(ib, ticker, timeframe)
+            df = live_trading.get_historical_data(ib, ticker, tf)
             return df if df is not None else pd.DataFrame()
         except Exception as exc:  # pragma: no cover - defensive logging
-            logger.error("Failed to download IBKR history for %s (%s): %s", ticker, timeframe, exc)
+            logger.error("Failed to download IBKR history for %s (%s): %s", ticker, tf, exc)
             return pd.DataFrame()
         finally:
             try:
@@ -229,12 +250,7 @@ def run_backtest(
                 pass
 
     # Load curated bars first (matches live trading); fall back to locally stored raw prices
-    df = live_trading.load_curated_bars(ticker, timeframe)
-    if df.empty:
-        logger.info("Curated data missing; attempting to use locally stored raw price bars instead.")
-        df = _load_raw_bars_from_disk(timeframe)
-    if df.empty:
-        df = _download_missing_bars_from_ibkr()
+    df = _load_backtest_bars(timeframe)
     if df.empty:
         raise FileNotFoundError(
             "No curated, raw, or IBKR-downloaded price data found. "
@@ -309,9 +325,7 @@ def run_backtest(
     # Cache higher timeframes for price-aware feature calculations
     price_frames: dict[str, pd.DataFrame] = {}
     for tf in ("4 hours", "1 day"):
-        tf_df = live_trading.load_curated_bars(ticker, tf)
-        if tf_df.empty:
-            tf_df = _load_raw_bars_from_disk(tf)
+        tf_df = _load_backtest_bars(tf)
 
         if tf_df.empty:
             logger.warning("No %s price data available for %s; features may degrade.", tf, ticker)

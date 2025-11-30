@@ -19,6 +19,7 @@ import tsla_ai_master_final_ready as live_trading
 from tsla_ai_master_final_ready import build_feature_row, is_us_equity_session_open
 from ml_predictor import predict_with_all_models, ensemble_vote
 from indicators import summarize_td_sequential
+from sp500_above_20d import load_sp500_above_20d_history
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(
@@ -152,6 +153,12 @@ def run_backtest(
             "data/lake/raw/<TICKER>/<timeframe_with_underscores>/"
         )
 
+    # Load historical breadth data once so we can align it with backtest bars
+    breadth_path = Path(DATA_DIR) / "S&P 500 Stocks Above 20-Day Average Historical Data.csv"
+    s5tw_history = load_sp500_above_20d_history(breadth_path)
+    if not s5tw_history.empty:
+        s5tw_history = s5tw_history.sort_index()
+
     position: Position | None = None
     equity_curve = []
 
@@ -197,6 +204,14 @@ def run_backtest(
         iv = indicators.get("iv", 50.0)
         delta = indicators.get("delta", 0.5)
         sp500_pct = indicators.get("sp500_above_20d", 50.0)
+        if not s5tw_history.empty:
+            lookup_date = now.date()
+            if lookup_date in s5tw_history.index:
+                sp500_pct = float(s5tw_history.loc[lookup_date])
+            else:
+                historical = s5tw_history.loc[:lookup_date]
+                if not historical.empty:
+                    sp500_pct = float(historical.iloc[-1])
 
         # EXACT SAME FEATURE ROW AS LIVE TRADING
         features = build_feature_row(indicators, price, iv, delta, sp500_pct)

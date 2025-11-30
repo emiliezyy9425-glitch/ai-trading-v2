@@ -163,6 +163,17 @@ def load_latest_features(ticker: str):
     features = _finalise_feature_frame(recent, ticker, start=None, end=None)
     features = add_golden_price_features(features)
 
+    duplicate_maps = {
+        "bb_position_1h.1": "bb_position_1h",
+        "price_z_120h.1": "price_z_120h",
+        "ret_1h.1": "ret_1h",
+        "ret_4h.1": "ret_4h",
+        "ret_24h.1": "ret_24h",
+    }
+    for dup, src in duplicate_maps.items():
+        if dup not in features.columns and src in features.columns:
+            features[dup] = features[src]
+
     # Restore index and close price
     features.index = original_index[-len(features):]
     features["close"] = close_prices.values[-len(features):]

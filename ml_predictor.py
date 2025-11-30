@@ -41,6 +41,20 @@ MODEL_CONFIDENCE_THRESHOLDS: dict[str, float] = {
     "Transformer": 0.982,
 }
 
+
+# Known aliases where legacy models saved during training expect the unsuffixed
+# column, while the current live feature builder provides a duplicate with a
+# ``.1`` suffix (or vice-versa). Keeping this mapping here lets every model
+# loader harmonise the incoming dataframe without forcing upstream callers to
+# remember to add the extra columns.
+FEATURE_ALIASES: dict[str, str] = {
+    "bb_position_1h.1": "bb_position_1h",
+    "price_z_120h.1": "price_z_120h",
+    "ret_1h.1": "ret_1h",
+    "ret_4h.1": "ret_4h",
+    "ret_24h.1": "ret_24h",
+}
+
 # Confidence threshold that forces a hold when high-confidence models disagree
 HIGH_CONFIDENCE_DISAGREEMENT_THRESHOLD = 0.98
 
@@ -77,6 +91,8 @@ _SCALER_CACHE = None
 # Cache to avoid spamming identical warnings each time predict is called
 _SCALER_MISMATCH_WARNED = False
 _MISSING_FEATURE_LOG: dict[str, tuple[str, ...]] = {}
+_ALIAS_WARNED = False
+_TABULAR_FALLBACK_WARNED: set[str] = set()
 
 
 def _load_feature_scaler():
@@ -100,6 +116,30 @@ def _load_feature_scaler():
         logging.error(f"Unable to load scaler from {scaler_path}: {exc}")
         _SCALER_CACHE = False
         return None
+
+
+def _apply_feature_aliases(df: pd.DataFrame) -> pd.DataFrame:
+    """Fill well-known alias columns so downstream models don't bail early."""
+
+    global _ALIAS_WARNED
+    missing_aliases = []
+    updated = df.copy()
+
+    for alias, source in FEATURE_ALIASES.items():
+        if alias in updated.columns:
+            continue
+        if source in updated.columns:
+            updated[alias] = updated[source]
+            missing_aliases.append(alias)
+
+    if missing_aliases and not _ALIAS_WARNED:
+        _ALIAS_WARNED = True
+        logging.info(
+            "Filled missing alias columns to match legacy feature schema: %s",
+            ", ".join(sorted(missing_aliases)),
+        )
+
+    return updated
 
 
 def _prepare_feature_frame(df: pd.DataFrame, columns: List[str]) -> pd.DataFrame:
@@ -174,8 +214,41 @@ def _predict_tabular_model(df: pd.DataFrame, name: str, path: Path) -> Tuple[np.
         logging.warning(err)
         return np.array([]), np.array([])
 
+    df = _apply_feature_aliases(_ensure_dataframe(df))
+
     try:
-        cols = list(getattr(model, "feature_names_in_", FEATURE_NAMES))
+        cols: List[str]
+        booster_names = None
+        expected_n = getattr(model, "n_features_in_", None)
+
+        # Prefer explicit training column names when available.
+        feature_names_in = getattr(model, "feature_names_in_", None)
+        if feature_names_in is not None:
+            cols = list(feature_names_in)
+        else:
+            booster = getattr(model, "get_booster", None)
+            if booster:
+                try:
+                    booster_names = booster().feature_names
+                except Exception:
+                    booster_names = None
+            if booster_names:
+                cols = list(booster_names)
+            elif expected_n:
+                cols = list(FEATURE_NAMES[:expected_n])
+                if name not in _TABULAR_FALLBACK_WARNED:
+                    _TABULAR_FALLBACK_WARNED.add(name)
+                    logging.warning(
+                        "%s missing feature_names_in_; using first %d FEATURE_NAMES to match training shape.",
+                        name,
+                        expected_n,
+                    )
+            else:
+                cols = list(FEATURE_NAMES)
+
+        if expected_n and len(cols) > expected_n:
+            cols = cols[:expected_n]
+
         feature_df = _prepare_feature_frame(df, cols)
         row = feature_df.tail(1).astype(float).values
 
@@ -358,7 +431,7 @@ def predict_lightgbm(df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
 
 
 def predict_lstm(df: pd.DataFrame, seq_len: Optional[int] = None) -> Tuple[np.ndarray, np.ndarray]:
-    df = _ensure_dataframe(df)
+    df = _apply_feature_aliases(_ensure_dataframe(df))
 
     model, cfg, err = _load_lstm()
     if err:
@@ -473,7 +546,7 @@ def _load_transformer() -> Tuple[Optional[nn.Module], Optional[Dict], Optional[s
 
 
 def predict_transformer(df: pd.DataFrame, seq_len: Optional[int] = None) -> Tuple[np.ndarray, np.ndarray]:
-    df = _ensure_dataframe(df)
+    df = _apply_feature_aliases(_ensure_dataframe(df))
 
     model, cfg, err = _load_transformer()
     if err:

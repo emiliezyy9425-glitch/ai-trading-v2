@@ -489,18 +489,19 @@ def run_backtest(
         )
 
         # Handle position logic
-        executed = False
+        signal_triggered = decision != "Hold"
+        trade_filled = False
         pnl = 0.0
         result = "HOLD"
 
         if decision == "Buy" and position is None:
             position = Position(entry_price=price, timestamp=now)
-            executed = True
+            trade_filled = True
             result = "ENTRY"
         elif decision == "Sell" and position is not None:
             pnl = price - position.entry_price
             result = "WIN" if pnl > 0 else "LOSS" if pnl < 0 else "FLAT"
-            executed = True
+            trade_filled = True
             equity_curve.append(pnl)
             position = None
 
@@ -574,7 +575,8 @@ def run_backtest(
             "decision": decision.upper(),
             "result": result,
             "pnl": round(pnl, 3),
-            "executed": "Yes" if executed else "No",
+            "executed": "Yes" if signal_triggered else "No",
+            "trade_filled": "Yes" if trade_filled else "No",
 
             # Ensemble
             "ensemble_reason": detail.get("reason", ""),

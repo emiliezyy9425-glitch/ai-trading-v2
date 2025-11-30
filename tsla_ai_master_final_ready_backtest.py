@@ -497,26 +497,23 @@ def run_backtest(
 
         # FULL MODEL TRANSPARENCY
         detail = detail if isinstance(detail, dict) else {}
+
+        # === Extract real model votes & confidences from the new ensemble ===
         votes = detail.get("votes", {})
         confs = detail.get("confidences", {})
-        ignored = detail.get("ignored_models", {})
-        missing = detail.get("missing_models", {})
 
-        def get_vote_conf(name: str):
-            if name in missing:
-                return "MISSING", 0.0
-            if name in ignored:
-                return "ERROR", 0.0
-            vote = votes.get(name, "")
-            conf = confs.get(name, 0.0)
-            return vote, conf
-
-        rf_v, rf_c = get_vote_conf("RandomForest")
-        xgb_v, xgb_c = get_vote_conf("XGBoost")
-        lgb_v, lgb_c = get_vote_conf("LightGBM")
-        lstm_v, lstm_c = get_vote_conf("LSTM")
-        ppo_v, ppo_c = get_vote_conf("PPO")
-        trans_v, trans_c = get_vote_conf("Transformer")
+        rf_v = votes.get("rf", "")
+        rf_c = confs.get("rf", 0.0)
+        xgb_v = votes.get("xgb", "")
+        xgb_c = confs.get("xgb", 0.0)
+        lgb_v = votes.get("lgb", "")
+        lgb_c = confs.get("lgb", 0.0)
+        lstm_v = votes.get("lstm", "")
+        lstm_c = confs.get("lstm", 0.0)
+        ppo_v = "Aggressive" if detail.get("ppo_action") == 2 else "Reduce" if detail.get("ppo_action") == 0 else "Hold"
+        ppo_c = detail.get("ppo_value", 0.0)
+        trans_v = votes.get("transformer", "")
+        trans_c = confs.get("transformer", 0.0)
 
         price_map = indicators.get("price", {})
 
@@ -567,12 +564,13 @@ def run_backtest(
             "ensemble_reason": detail.get("reason", ""),
 
             # Individual model votes & confidences
-            "rf_vote": rf_v, "rf_conf": round(rf_c, 4),
-            "xgb_vote": xgb_v, "xgb_conf": round(xgb_c, 4),
-            "lgb_vote": lgb_v, "lgb_conf": round(lgb_c, 4),
-            "lstm_vote": lstm_v, "lstm_conf": round(lstm_c, 4),
+            "rf_vote": rf_v, "rf_conf": round(rf_c, 4) if rf_c else 0.0,
+            "xgb_vote": xgb_v, "xgb_conf": round(xgb_c, 4) if xgb_c else 0.0,
+            "lgb_vote": lgb_v, "lgb_conf": round(lgb_c, 4) if lgb_c else 0.0,
+            "lstm_vote": lstm_v, "lstm_conf": round(lstm_c, 4) if lstm_c else 0.0,
             "ppo_vote": ppo_v, "ppo_conf": round(ppo_c, 4),
-            "transformer_vote": trans_v, "transformer_conf": round(trans_c, 4),
+            "transformer_vote": trans_v, "transformer_conf": round(trans_c, 4) if trans_c else 0.0,
+            "ppo_action_num": detail.get("ppo_action", 1),
 
             # Human summaries
             "tds_summary": tds_summary,

@@ -445,7 +445,8 @@ def run_backtest(
         price_map = indicators.get("price", {})
 
         for tf, frame in price_frames.items():
-            tf_price = frame[frame.index <= reference]["close"]
+            last_completed = live_trading._last_completed_bar_timestamp(tf, reference)
+            tf_price = frame[frame.index <= last_completed]["close"]
             if tf_price.empty:
                 continue
             price_map[tf] = float(tf_price.iloc[-1])

@@ -616,6 +616,36 @@ def _load_ppo(path: Optional[Path] = None):
         return None, str(e)
 
 
+def _load_feature_order_sidecar(path: Path) -> Optional[List[str]]:
+    """Load a saved PPO feature ordering if a sidecar file is present."""
+
+    # Allow both JSON and newline-delimited formats to keep compatibility with
+    # hand-crafted metadata dropped next to the checkpoint.
+    candidates = [
+        path.with_suffix(".features.json"),
+        path.with_suffix(".features.txt"),
+        path.with_name(f"{path.stem}_features.json"),
+    ]
+
+    for candidate in candidates:
+        if not candidate.exists():
+            continue
+
+        try:
+            if candidate.suffix == ".json":
+                data = json.loads(candidate.read_text())
+                if isinstance(data, list) and data:
+                    return [str(item) for item in data]
+            else:
+                lines = [line.strip() for line in candidate.read_text().splitlines() if line.strip()]
+                if lines:
+                    return lines
+        except Exception as exc:  # pragma: no cover — defensive
+            logging.warning("Failed to load PPO feature metadata from %s: %s", candidate, exc)
+
+    return None
+
+
 def predict_ppo(df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
     df = _ensure_dataframe(df)
 
@@ -630,16 +660,58 @@ def predict_ppo(df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
         return np.array([]), np.array([])
 
     try:
-        obs_frame = df.copy().reindex(columns=FEATURE_NAMES, fill_value=0)
+        saved_feature_order = _load_feature_order_sidecar(path)
+        # StableBaselines doesn't persist column names, so honor a sidecar if
+        # present; otherwise prefer any feature metadata the model exposes and
+        # finally fall back to the canonical schema.
+        feature_candidates = [
+            saved_feature_order,
+            getattr(model, "feature_names", None),
+            getattr(model, "feature_names_in_", None),
+            FEATURE_NAMES,
+            list(df.columns),
+        ]
+
+        feature_order: List[str] = []
+        obs_space = getattr(model, "observation_space", None)
+        expected_len = int(obs_space.shape[0]) if getattr(obs_space, "shape", None) else None
+
+        for candidate in feature_candidates:
+            if not candidate:
+                continue
+            candidate_list = [str(col) for col in candidate]
+            if expected_len and len(candidate_list) == expected_len:
+                feature_order = candidate_list
+                break
+            if not feature_order:
+                feature_order = candidate_list
+
+        if not feature_order:
+            feature_order = FEATURE_NAMES
+
+        if expected_len and len(feature_order) != expected_len:
+            logging.warning(
+                "PPO feature metadata length (%d) mismatches observation space (%d); continuing with best-effort alignment.",
+                len(feature_order),
+                expected_len,
+            )
+
+        obs_frame = df.copy().reindex(columns=feature_order, fill_value=0)
         obs_frame = obs_frame.replace([np.inf, -np.inf], np.nan).fillna(0)
         obs_frame = obs_frame.infer_objects(copy=False)
         row = obs_frame.tail(1).values.astype(np.float32)
-        obs_space = getattr(model, "observation_space", None)
-        expected_len = int(obs_space.shape[0]) if getattr(obs_space, "shape", None) else row.shape[1]
+        if expected_len is None:
+            expected_len = row.shape[1]
+
         if row.shape[1] < expected_len:
             pad = expected_len - row.shape[1]
             row = np.pad(row, ((0, 0), (0, pad)), constant_values=0.0)
         elif row.shape[1] > expected_len:
+            logging.warning(
+                "PPO feature count (%d) exceeds observation space (%d); truncating to match checkpoint.",
+                row.shape[1],
+                expected_len,
+            )
             row = row[:, :expected_len]
 
         action, _ = model.predict(row, deterministic=True)

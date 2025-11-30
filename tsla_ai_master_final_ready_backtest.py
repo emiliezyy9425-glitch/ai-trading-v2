@@ -332,12 +332,21 @@ def run_backtest(
             continue
 
         # === PRICE RECONSTRUCTION (price-free system) ===
-        if "ret_1h" in df.columns:
-            cum_ret = df["ret_1h"].iloc[:bar_idx + 1].sum()
+        if "close" in bar:
+            try:
+                price = float(bar["close"])
+            except (TypeError, ValueError):
+                price = float("nan")
+        elif "price_1h" in bar:
+            price = float(bar["price_1h"])
+        elif "ret_1h" in df.columns:
+            cum_ret = df["ret_1h"].iloc[: bar_idx + 1].sum()
             price = round(float(np.exp(cum_ret) * 100.0), 4)
         else:
             price = 100.0
         # ================================================
+        if not np.isfinite(price):
+            price = price_history[-1][1] if price_history else 100.0
         iv = indicators.get("iv", 50.0)
         delta = indicators.get("delta", 0.5)
         sp500_pct = indicators.get("sp500_above_20d", 50.0)

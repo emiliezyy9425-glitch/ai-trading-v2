@@ -27,7 +27,7 @@ from ml_predictor import (
 from indicators import summarize_td_sequential
 from sp500_above_20d import load_sp500_above_20d_history
 from sp500_breadth import calculate_s5tw_history_ibkr_sync
-from feature_engineering import default_feature_values
+from feature_engineering import default_feature_values, sanitize_feature_row
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(
@@ -173,7 +173,8 @@ def _align_feature_row(
         if alias not in aligned or pd.isna(alias_value) or alias_value == 0:
             aligned[alias] = aligned[source]
 
-    return aligned.reindex(REQUIRED_FEATURE_COLUMNS, fill_value=0.0)
+    aligned = aligned.reindex(REQUIRED_FEATURE_COLUMNS, fill_value=0.0)
+    return sanitize_feature_row(aligned, REQUIRED_FEATURE_COLUMNS)
 
 
 def run_backtest(

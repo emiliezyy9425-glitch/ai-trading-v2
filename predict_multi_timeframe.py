@@ -15,7 +15,7 @@ from scripts.generate_historical_data import (
     _finalise_feature_frame,
 )
 from self_learn import FEATURE_NAMES
-from feature_engineering import add_golden_price_features
+from feature_engineering import add_golden_price_features, sanitize_feature_row
 from ml_predictor import (
     FEATURE_ALIASES,
     predict_with_all_models,
@@ -124,9 +124,9 @@ def load_latest_features(ticker: str):
     for col in missing:
         features[col] = 0.0
 
-    # Preserve deterministic order and drop any metadata columns
+    # Preserve deterministic order, coerce numeric values, and drop metadata
     ordered = features.reindex(columns=LIVE_MODEL_FEATURES, fill_value=0.0)
-    feats_row = ordered.iloc[-1]
+    feats_row = sanitize_feature_row(ordered.iloc[-1], LIVE_MODEL_FEATURES)
 
     return feats_row, features  # return both row and full df
 

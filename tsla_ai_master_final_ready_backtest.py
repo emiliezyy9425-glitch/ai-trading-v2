@@ -269,7 +269,8 @@ def run_backtest(
         # Human-readable summaries
         fib_summary = indicators["fib_summary"].get(timeframe, "")
         tds_summary = f"{indicators['tds_trend'].get(timeframe, 0)}/{indicators['tds_signal'].get(timeframe, 0)}"
-        td9_summary = summarize_td_sequential(indicators.get("td9_summary", {})).get(timeframe, "")
+        # TD Sequential summaries are already precomputed per timeframe in the indicator map
+        td9_summary = indicators.get("td9_summary", {}).get(timeframe, "")
 
         # FULL MODEL TRANSPARENCY
         detail = detail if isinstance(detail, dict) else {}

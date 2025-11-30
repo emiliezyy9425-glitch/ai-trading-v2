@@ -5,7 +5,6 @@ import httpx
 from ib_insync import *
 from typing import Optional
 from pathlib import Path
-from indicators import get_historical_data
 
 # Setup logging
 logging.basicConfig(
@@ -63,7 +62,7 @@ def get_sp500_above_20d(ib: Optional[IB] = None):
         # Fetch SPX data
         contract = Index("SPX", "CBOE", "USD")
         ib.qualifyContracts(contract)
-        df = get_historical_data(ib, "SPX", timeframe="1 day", duration="21 D")
+        df = _get_spx_history(ib, timeframe="1 day", duration="21 D")
         if df is None or df.empty:
             logger.error("❌ Failed to fetch SPX data from IBKR. Falling back to Investing.com.")
             return get_sp500_above_20d_investing()
@@ -83,6 +82,29 @@ def get_sp500_above_20d(ib: Optional[IB] = None):
     except Exception as e:  # pragma: no cover - IBKR failure
         logger.error(f"❌ Error fetching S&P 500 data: {e}. Falling back to Investing.com.")
         return get_sp500_above_20d_investing()
+
+
+def _get_spx_history(ib: IB, timeframe: str, duration: str) -> pd.DataFrame | None:
+    """Fetch SPX historical bars from IBKR with a minimal dependency footprint."""
+
+    if ib is None or not ib.isConnected():
+        return None
+
+    bars = ib.reqHistoricalData(
+        Index("SPX", "CBOE", "USD"),
+        endDateTime="",
+        durationStr=duration,
+        barSizeSetting=timeframe,
+        whatToShow="TRADES",
+        useRTH=True,
+        formatDate=1,
+    )
+
+    if not bars:
+        return None
+
+    df = util.df(bars)
+    return df[["date", "close"]].set_index("date")
 
 
 def load_sp500_above_20d_history(csv_path: Path | str | None = None) -> pd.Series:

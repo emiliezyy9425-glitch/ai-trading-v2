@@ -516,18 +516,19 @@ def run_backtest(
         votes = detail.get("votes", {})
         confs = detail.get("confidences", {})
 
-        rf_v = votes.get("rf", "")
-        rf_c = confs.get("rf", 0.0)
-        xgb_v = votes.get("xgb", "")
-        xgb_c = confs.get("xgb", 0.0)
-        lgb_v = votes.get("lgb", "")
-        lgb_c = confs.get("lgb", 0.0)
-        lstm_v = votes.get("lstm", "")
-        lstm_c = confs.get("lstm", 0.0)
+        # New ensemble uses short names; fall back to legacy keys for compatibility
+        rf_v = votes.get("RandomForest", votes.get("rf", "Hold"))
+        rf_c = confs.get("RandomForest", confs.get("rf", 0.0))
+        xgb_v = votes.get("XGBoost", votes.get("xgb", "Hold"))
+        xgb_c = confs.get("XGBoost", confs.get("xgb", 0.0))
+        lgb_v = votes.get("LightGBM", votes.get("lgb", "Hold"))
+        lgb_c = confs.get("LightGBM", confs.get("lgb", 0.0))
+        lstm_v = votes.get("LSTM", votes.get("lstm", "Hold"))
+        lstm_c = confs.get("LSTM", confs.get("lstm", 0.0))
         ppo_v = "Aggressive" if detail.get("ppo_action") == 2 else "Reduce" if detail.get("ppo_action") == 0 else "Hold"
         ppo_c = detail.get("ppo_value", 0.0)
-        trans_v = votes.get("transformer", "")
-        trans_c = confs.get("transformer", 0.0)
+        trans_v = votes.get("Transformer", votes.get("transformer", "Hold"))
+        trans_c = confs.get("Transformer", confs.get("transformer", 0.0))
 
         price_map = indicators.get("price", {})
 

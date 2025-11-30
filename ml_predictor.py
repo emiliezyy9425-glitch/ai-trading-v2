@@ -554,6 +554,21 @@ def predict_transformer(df: pd.DataFrame, seq_len: Optional[int] = None) -> Tupl
         return np.array([]), np.array([])
 
     cols = cfg.get("feature_cols", FEATURE_NAMES)  # Fallback if not saved (retrain doesn't save it)
+    cols = list(dict.fromkeys(cols))  # drop accidental duplicates while keeping order
+
+    input_size = int(cfg.get("input_size", len(cols)))
+    if len(cols) != input_size:
+        logging.warning(
+            "Transformer config input_size (%d) differs from feature_cols length (%d); aligning to input_size.",
+            input_size,
+            len(cols),
+        )
+        if len(cols) > input_size:
+            cols = cols[:input_size]
+        else:
+            filler = [c for c in FEATURE_NAMES if c not in cols]
+            cols = [*cols, *filler[: input_size - len(cols)]]
+
     missing = [c for c in cols if c not in df.columns]
     if missing:
         logging.error(f"Transformer missing features: {missing[:5]}...")

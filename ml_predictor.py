@@ -753,6 +753,12 @@ def get_ensemble_signal(row):
             votes.append(vote)
             confs["transformer"] = _get_row_value(row, "transformer_conf", 0.0)
 
+    if (_get_row_value(row, "ppo_conf", 0.0) >= ENSEMBLE_THRESHOLDS["ppo"]):
+        vote = _get_row_value(row, "ppo_vote")
+        if vote:
+            votes.append(vote)
+            confs["ppo"] = _get_row_value(row, "ppo_conf", 0.0)
+
     if len(votes) < 3:
         return "HOLD", 0.0, votes, confs
 

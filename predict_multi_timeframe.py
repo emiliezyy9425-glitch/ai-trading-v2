@@ -87,7 +87,7 @@ def load_latest_features(ticker: str):
 
     # Drop raw OHLCV to avoid conflict
     recent = recent.drop(columns=["open", "high", "low", "close", "volume"], errors="ignore")
-    recent = recent.reset_index(drop=True)
+    recent = recent.reset_index().rename(columns={"index": "timestamp"})
 
     # Generate full feature set
     features = _finalise_feature_frame(recent, ticker, start=None, end=None)

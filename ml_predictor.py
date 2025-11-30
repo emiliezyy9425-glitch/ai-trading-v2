@@ -7,7 +7,7 @@ import json
 import logging
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Dict, Tuple, Optional, List
+from typing import Dict, Tuple, Optional, List, Sequence
 import numpy as np
 import pandas as pd
 import torch
@@ -239,7 +239,16 @@ def _load_joblib_model(path: Path, name: str):
         return None, f"{name} load_error: {exc}"
 
 
-def _predict_tabular_model(df: pd.DataFrame, name: str, path: Path) -> Tuple[np.ndarray, np.ndarray]:
+def _predict_tabular_model(
+    df: pd.DataFrame,
+    name: str,
+    paths: Sequence[Path],
+) -> Tuple[np.ndarray, np.ndarray]:
+    path: Optional[Path] = next((p for p in paths if p.exists()), None)
+    if path is None:
+        logging.warning(f"{name} load failed: missing model ({paths})")
+        return np.array([]), np.array([])
+
     model, err = _load_joblib_model(path, name)
     if err:
         logging.warning(err)
@@ -448,17 +457,38 @@ def _ensure_dataframe(data: object) -> pd.DataFrame:
 
 def predict_random_forest(df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
     df = _ensure_dataframe(df)
-    return _predict_tabular_model(df, "RandomForest", MODEL_DIR / "rf_latest.joblib")
+    return _predict_tabular_model(
+        df,
+        "RandomForest",
+        [
+            MODEL_DIR / "updated_random_forest.pkl",
+            MODEL_DIR / "rf_latest.joblib",
+        ],
+    )
 
 
 def predict_xgboost(df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
     df = _ensure_dataframe(df)
-    return _predict_tabular_model(df, "XGBoost", MODEL_DIR / "xgb_latest.joblib")
+    return _predict_tabular_model(
+        df,
+        "XGBoost",
+        [
+            MODEL_DIR / "updated_xgboost.pkl",
+            MODEL_DIR / "xgb_latest.joblib",
+        ],
+    )
 
 
 def predict_lightgbm(df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
     df = _ensure_dataframe(df)
-    return _predict_tabular_model(df, "LightGBM", MODEL_DIR / "lgb_latest.joblib")
+    return _predict_tabular_model(
+        df,
+        "LightGBM",
+        [
+            MODEL_DIR / "updated_lightgbm.pkl",
+            MODEL_DIR / "lgb_latest.joblib",
+        ],
+    )
 
 
 def predict_lstm(df: pd.DataFrame, seq_len: Optional[int] = None) -> Tuple[np.ndarray, np.ndarray]:

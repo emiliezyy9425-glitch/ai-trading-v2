@@ -2086,6 +2086,31 @@ def enforce_training_consistency(df: pd.DataFrame) -> pd.DataFrame:
     return aligned
 
 
+def _align_feature_columns(frame: pd.DataFrame) -> pd.DataFrame:
+    """Ensure *frame* contains the full training feature schema.
+
+    Historical IBKR seeds (or cached copies) may lack newly added feature
+    columns. Aligning with ``FEATURE_NAMES`` and filling with the established
+    defaults prevents ``KeyError`` when populating the in-memory
+    ``FEATURE_HISTORY`` deques.
+    """
+
+    if frame is None or frame.empty:
+        return frame
+
+    defaults = default_feature_values(FEATURE_NAMES)
+    default_series = pd.Series(defaults)
+
+    aligned = frame.copy()
+    for name, default in defaults.items():
+        if name not in aligned.columns:
+            aligned[name] = default
+
+    aligned[FEATURE_NAMES] = aligned[FEATURE_NAMES].replace([np.inf, -np.inf], np.nan)
+    aligned[FEATURE_NAMES] = aligned[FEATURE_NAMES].fillna(default_series)
+    return aligned
+
+
 def _ibkr_cache_path(ticker: str) -> str:
     safe = "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in ticker)
     return os.path.join(IBKR_FEATURE_CACHE_DIR, f"{safe}.csv")
@@ -2136,6 +2161,7 @@ def _seed_feature_history_from_cache(ticker: str) -> bool:
         return False
 
     cached = cached.sort_values("timestamp")
+    cached = _align_feature_columns(cached)
     history = FEATURE_HISTORY[ticker]
     appended = 0
     for _, row in cached.tail(FEATURE_SEQUENCE_WINDOW).iterrows():
@@ -2285,6 +2311,7 @@ def _seed_feature_history_from_ibkr(
         return False
 
     dataset = dataset.sort_values("timestamp")
+    dataset = _align_feature_columns(dataset)
     window = dataset.tail(FEATURE_SEQUENCE_WINDOW)
     if window.empty:
         logger.warning(

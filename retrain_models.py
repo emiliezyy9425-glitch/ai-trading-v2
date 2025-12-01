@@ -64,6 +64,7 @@ def make_env(df_subset: pd.DataFrame):
 PROJECT_ROOT = Path(__file__).resolve().parent
 MODEL_DIR = PROJECT_ROOT / "models"
 LOG_DIR = PROJECT_ROOT / "logs"
+HISTORICAL_DATA_FILE = resolve_data_path("historical_data.csv")
 
 # --------------------------------------------------------------------------- #
 # Logging

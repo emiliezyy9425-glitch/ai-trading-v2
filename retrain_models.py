@@ -36,6 +36,7 @@ from tqdm import tqdm
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from models.transformer import TransformerModel
 
 
 from pytorch_utils import configure_pytorch
@@ -703,37 +704,6 @@ def train_ppo(params: Dict[str, Any]):
 # --------------------------------------------------------------
 logger = logging.getLogger(__name__)
 
-class TransformerModel(nn.Module):
-    """Positional-encoding-free Transformer (uses only the encoder)."""
-    def __init__(
-        self,
-        input_size: int,
-        d_model: int = 384,
-        nhead: int = 8,
-        num_layers: int = 3,
-        dim_feedforward: int = 1536,
-        dropout: float = 0.1,
-    ):
-        super().__init__()
-        self.embed = nn.Linear(input_size, d_model)
-
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=d_model,
-            nhead=nhead,
-            dim_feedforward=dim_feedforward,
-            dropout=dropout,
-            batch_first=True,
-            activation="gelu",
-        )
-        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
-        self.classifier = nn.Linear(d_model, 1)   # logits
-
-    def forward(self, x):
-        # x: (B, seq_len, input_size)
-        x = self.embed(x)                         # (B, S, d_model)
-        x = self.transformer(x)                   # (B, S, d_model)
-        return self.classifier(x[:, -1, :])       # last token → (B, 1)
-
 
 def train_transformer(params: Dict[str, Any]):
     """Train Transformer with Optuna, FP16, early-stop, best-model save."""
@@ -800,7 +770,7 @@ def train_transformer(params: Dict[str, Any]):
         batch_size = trial.suggest_categorical("batch_size", [32, 64, 128])
 
         model = TransformerModel(
-            input_size=len(FEATURE_NAMES),
+            input_size=X_train.shape[-1],
             d_model=d_model,
             nhead=nhead,
             num_layers=num_layers,
@@ -808,18 +778,18 @@ def train_transformer(params: Dict[str, Any]):
             dropout=dropout,
         ).to(device)
 
-        criterion = nn.BCEWithLogitsLoss()
+        criterion = nn.BCELoss()
         optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
         use_amp = device.type == "cuda"
         scaler_amp = torch.amp.GradScaler("cuda") if use_amp else None
 
         train_ds = TensorDataset(
             torch.from_numpy(X_train_seq),
-            torch.from_numpy(y_train_seq).unsqueeze(1),
+            torch.from_numpy(y_train_seq),
         )
         val_ds = TensorDataset(
             torch.from_numpy(X_val_seq),
-            torch.from_numpy(y_val_seq).unsqueeze(1),
+            torch.from_numpy(y_val_seq),
         )
         train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
         val_loader   = DataLoader(val_ds,   batch_size=batch_size)
@@ -835,21 +805,21 @@ def train_transformer(params: Dict[str, Any]):
                 optimizer.zero_grad()
                 if use_amp:
                     with torch.amp.autocast("cuda"):
-                        logits = model(xb)
-                        loss = criterion(logits, yb)
+                        probs = model(xb)
+                        loss = criterion(probs, yb)
                     scaler_amp.scale(loss).backward()
                     scaler_amp.step(optimizer)
                     scaler_amp.update()
                 else:
-                    logits = model(xb)
-                    loss = criterion(logits, yb)
+                    probs = model(xb)
+                    loss = criterion(probs, yb)
                     loss.backward()
                     optimizer.step()
 
             # ---- validation ------------------------------------------------
             model.eval()
             with torch.no_grad():
-                preds = torch.sigmoid(model(torch.from_numpy(X_val_seq).to(device)))
+                preds = model(torch.from_numpy(X_val_seq).to(device))
                 preds = preds.cpu().numpy().flatten()
             try:
                 auc = roc_auc_score(y_val_seq, preds)
@@ -896,28 +866,24 @@ def train_transformer(params: Dict[str, Any]):
     X_train_full_seq = to_sequences(X_train_full)
     y_train_full_seq = y_train_full[seq_len - 1 : seq_len - 1 + X_train_full_seq.shape[0]]
 
-    # rebuild with best hyper-params
-    d_model = ((best["d_model"] // best["nhead"]) + 1) * best["nhead"]
-    d_model = min(d_model, 512)
-
     final_model = TransformerModel(
-        input_size=len(FEATURE_NAMES),
-        d_model=d_model,
-        nhead=best["nhead"],
-        num_layers=best["num_layers"],
-        dim_feedforward=d_model * 4,
-        dropout=best["dropout"],
+        input_size=X_train.shape[-1],
+        d_model=params["d_model"],
+        nhead=params["nhead"],
+        num_layers=params["num_layers"],
+        dim_feedforward=params["dim_feedforward"],
+        dropout=params["dropout"],
     ).to(device)
 
-    optimizer = optim.AdamW(final_model.parameters(), lr=best["learning_rate"], weight_decay=0.01)
+    optimizer = optim.AdamW(final_model.parameters(), lr=params["learning_rate"], weight_decay=0.01)
     use_amp = device.type == "cuda"
     scaler_amp = torch.amp.GradScaler("cuda") if use_amp else None
 
     train_ds = TensorDataset(
         torch.from_numpy(X_train_full_seq),
-        torch.from_numpy(y_train_full_seq).unsqueeze(1),
+        torch.from_numpy(y_train_full_seq),
     )
-    train_loader = DataLoader(train_ds, batch_size=best["batch_size"], shuffle=True)
+    train_loader = DataLoader(train_ds, batch_size=params["batch_size"], shuffle=True)
 
     epochs = params.get("epochs", 120)
     for epoch in tqdm(range(epochs), desc="Final Transformer"):
@@ -927,14 +893,14 @@ def train_transformer(params: Dict[str, Any]):
             optimizer.zero_grad()
             if use_amp:
                 with torch.amp.autocast("cuda"):
-                    logits = final_model(xb)
-                    loss = nn.BCEWithLogitsLoss()(logits, yb)
+                    probs = final_model(xb)
+                    loss = nn.BCELoss()(probs, yb)
                 scaler_amp.scale(loss).backward()
                 scaler_amp.step(optimizer)
                 scaler_amp.update()
             else:
-                logits = final_model(xb)
-                loss = nn.BCEWithLogitsLoss()(logits, yb)
+                probs = final_model(xb)
+                loss = nn.BCELoss()(probs, yb)
                 loss.backward()
                 optimizer.step()
 
@@ -943,8 +909,7 @@ def train_transformer(params: Dict[str, Any]):
     # ------------------------------------------------------------------
     final_model.eval()
     with torch.no_grad():
-        test_logits = final_model(torch.from_numpy(X_test_seq).to(device))
-        test_probs = torch.sigmoid(test_logits).cpu().numpy().flatten()
+        test_probs = final_model(torch.from_numpy(X_test_seq).to(device)).cpu().numpy().flatten()
 
     test_auc = roc_auc_score(y_test_seq, test_probs)
     test_acc = accuracy_score(y_test_seq, (test_probs > 0.5).astype(int))
@@ -957,12 +922,12 @@ def train_transformer(params: Dict[str, Any]):
     torch.save(final_model.state_dict(), pt_path)
 
     cfg = {
-        "input_size": len(FEATURE_NAMES),
-        "d_model": d_model,
-        "nhead": best["nhead"],
-        "num_layers": best["num_layers"],
-        "dim_feedforward": d_model * 4,
-        "dropout": best["dropout"],
+        "input_size": X_train.shape[-1],
+        "d_model": params["d_model"],
+        "nhead": params["nhead"],
+        "num_layers": params["num_layers"],
+        "dim_feedforward": params["dim_feedforward"],
+        "dropout": params["dropout"],
         "time_steps": seq_len,
         "scaler_path": str(MODEL_DIR / "transformer_scaler.joblib"),
     }

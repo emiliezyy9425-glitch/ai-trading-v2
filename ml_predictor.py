@@ -14,6 +14,7 @@ import torch
 import torch.nn as nn
 from joblib import load
 from stable_baselines3 import PPO
+from models.transformer import TransformerModel
 
 os.environ["SB3_PPO_WARN"] = "0"
 
@@ -522,26 +523,6 @@ def predict_lstm(df: pd.DataFrame, seq_len: Optional[int] = None) -> Tuple[np.nd
     return probs, decisions
 
 
-# ------------------------------------------------------------------
-#  Transformer Model — EXACTLY MATCHES TRAINING
-# ------------------------------------------------------------------
-class TransformerModel(nn.Module):
-    def __init__(self, input_size: int, d_model: int, nhead: int, num_layers: int, dim_feedforward: int, dropout: float):
-        super().__init__()
-        self.embedding = nn.Linear(input_size, d_model)
-        encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead, dim_feedforward=dim_feedforward, dropout=dropout, batch_first=True)
-        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
-        self.fc = nn.Linear(d_model, 1)
-        self.sigmoid = nn.Sigmoid()
-
-    def forward(self, x):
-        x = self.embedding(x)
-        x = self.transformer(x)
-        x = x[:, -1, :]  # Last token
-        x = self.fc(x)
-        return self.sigmoid(x)
-
-
 def _load_transformer() -> Tuple[Optional[nn.Module], Optional[Dict], Optional[str]]:
     pt_path = MODEL_DIR / "updated_transformer.pt"
     cfg_path = MODEL_DIR / "updated_transformer.json"
@@ -644,7 +625,7 @@ def predict_transformer(df: pd.DataFrame, seq_len: Optional[int] = None) -> Tupl
     X = df_seq.reshape((1, use_seq_len, -1))
 
     with torch.no_grad():
-        outputs = model(torch.tensor(X))
+        outputs = model(torch.tensor(X, dtype=torch.float32))
 
         # Ensure probabilities even if the saved model emits logits.
         if torch.max(outputs) > 1 or torch.min(outputs) < 0:

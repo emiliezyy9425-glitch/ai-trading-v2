@@ -1,5 +1,6 @@
 {
   "data_path": "data/historical_data_no_price.csv",
+  "target_column": "decision",
   "time_steps": 120,
   "epochs": 100,
   "batch_size": 128,
@@ -10,5 +11,9 @@
   "weight_decay": 1e-5,
   "gradient_clip": 1.0,
   "n_trials": 30,
-  "early_stopping_patience": 15
+  "max_training_minutes": 60,
+  "early_stopping_patience": 15,
+  "use_class_weights": true,
+  "val_split": 0.15,
+  "test_split": 0.15
 }

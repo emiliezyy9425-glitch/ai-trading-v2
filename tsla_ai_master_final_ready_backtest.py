@@ -21,8 +21,8 @@ import tsla_ai_master_final_ready as live_trading
 from tsla_ai_master_final_ready import build_feature_row, is_us_equity_session_open
 from ml_predictor import (
     FEATURE_ALIASES,
-    _live_ensemble_decision,
     predict_with_all_models,
+    independent_model_decisions,
 )
 from indicators import summarize_td_sequential
 from sp500_above_20d import load_sp500_above_20d_history
@@ -491,38 +491,67 @@ def run_backtest(
         )
 
         predictions = predict_with_all_models(sequence_df, seq_len=FEATURE_SEQUENCE_WINDOW)
-        decision, detail = _live_ensemble_decision(
-            predictions,
-            return_details=True,
-            current_position=0.0 if position is None else float(position.direction),
-            prev_row={},
-            ppo_metadata=None,
-        )
 
-        # Handle position logic
-        signal_triggered = decision != "Hold"
+        # === CORRECTED POSITION MANAGEMENT (paste this exactly) ===
+        signal_triggered = False
         trade_filled = False
-        pnl = 0.0
+        pnl_points = 0.0
         result = "HOLD"
-
         trade_size = position.size if position is not None else 0
 
-        if decision == "Buy":
+        decision, detail = independent_model_decisions(predictions, return_details=True)
+        decision = decision.upper()
+
+        if detail.get("reason", "").startswith("≥3 qualified + nuclear confirmed"):
+            signal_triggered = True
+            expected_direction = 1 if decision == "BUY" else -1
+
+            # Open or add to position
             if position is None:
-                position = Position(entry_price=price, timestamp=now, direction=1)
+                position = Position(
+                    entry_price=price,
+                    timestamp=now,
+                    direction=expected_direction,
+                    size=1
+                )
                 trade_filled = True
+                trade_size = position.size
                 result = "ENTRY"
-            elif position.direction == 1:
-                position.add(price, now)
-                trade_filled = True
-                result = "PYRAMID"
-        elif decision == "Sell" and position is not None:
-            pnl = position.pnl(price)
-            result = "WIN" if pnl > 0 else "LOSS" if pnl < 0 else "FLAT"
-            trade_filled = True
-            equity_curve.append(pnl)
-            trade_size = position.size
-            position = None
+                equity_curve.append(0)  # first bar = no PnL yet
+            else:
+                # Already in correct direction → pyramid or just hold
+                if position.direction == expected_direction:
+                    position.size += 1
+                    trade_filled = True  # count as additional fill
+                    trade_size = position.size
+                    result = "PYRAMID"
+                # Reverse signal → close old, open new
+                else:
+                    # Close old position
+                    pnl_points = (price - position.entry_price) * position.direction
+                    equity_curve.append(pnl_points)
+                    result = "WIN" if pnl_points > 0 else "LOSS" if pnl_points < 0 else "FLAT"
+                    trade_size = position.size
+                    # Open new position
+                    position = Position(
+                        entry_price=price,
+                        timestamp=now,
+                        direction=expected_direction,
+                        size=1
+                    )
+                    trade_filled = True
+        else:
+            # No nuclear signal → close if in position
+            if position is not None:
+                pnl_points = (price - position.entry_price) * position.direction
+                equity_curve.append(pnl_points)
+                result = "WIN" if pnl_points > 0 else "LOSS" if pnl_points < 0 else "FLAT"
+                trade_size = position.size
+                position = None
+            decision = "HOLD"
+
+        pnl = pnl_points
+        decision_upper = decision.upper()
 
         # Human-readable summaries
         tds_summary = f"{indicators['tds_trend'].get(timeframe, 0)}/{indicators['tds_signal'].get(timeframe, 0)}"
@@ -592,10 +621,10 @@ def run_backtest(
             "price_1h": _price_value("1 hour"),
             "price_4h": _price_value("4 hours"),
             "price_1d": _price_value("1 day"),
-            "decision": decision.upper(),
+            "decision": decision_upper,
             "result": result,
             "pnl": round(pnl, 3),
-            "position_size": current_size if decision != "Sell" else trade_size,
+            "position_size": current_size if decision_upper != "SELL" else trade_size,
             "executed": "Yes" if signal_triggered else "No",
             "trade_filled": "Yes" if trade_filled else "No",
 

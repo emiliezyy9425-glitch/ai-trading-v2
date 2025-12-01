@@ -19,6 +19,7 @@ import numpy as np
 # === EXACT SAME IMPORTS AS LIVE TRADING ===
 import tsla_ai_master_final_ready as live_trading
 from tsla_ai_master_final_ready import build_feature_row, is_us_equity_session_open
+import ml_predictor
 from ml_predictor import (
     FEATURE_ALIASES,
     predict_with_all_models,
@@ -492,13 +493,32 @@ def run_backtest(
         preds, ppo_meta = predict_with_all_models(
             sequence_df, seq_len=FEATURE_SEQUENCE_WINDOW
         )
-        result = independent_model_decisions(
-            (preds, ppo_meta), return_details=True
-        )
-        if isinstance(result, str):
-            decision, detail = result, {}
-        else:
-            decision, detail = result
+
+        # === 100% IDENTICAL TO LIVE TRADING DECISION PATH ===
+        try:
+            # This is EXACTLY what live trading does
+            raw_result = ml_predictor.independent_model_decisions(
+                preds,
+                ppo_meta=ppo_meta,
+                return_details=True
+            )
+
+            # Handle both return formats (defensive)
+            if isinstance(raw_result, str):
+                decision = raw_result
+                details = {}
+            else:
+                decision, details = raw_result
+
+            # This is what live trading uses
+            final_decision = decision  # Already "Buy"/"Sell"/"Hold"
+
+        except Exception as e:
+            logger.error(f"Decision engine failed in backtest: {e}")
+            final_decision = "Hold"
+            details = {}
+        decision = final_decision
+        detail = details
         print(
             f"DEBUG: {now} → {decision} | {detail.get('reason', 'no reason')}"
         )
@@ -645,7 +665,7 @@ def run_backtest(
             "xgb_vote": xgb_v, "xgb_conf": round(xgb_c, 4) if xgb_c else 0.0,
             "lgb_vote": lgb_v, "lgb_conf": round(lgb_c, 4) if lgb_c else 0.0,
             "lstm_vote": lstm_v, "lstm_conf": round(lstm_c, 4) if lstm_c else 0.0,
-            "ppo_vote": ppo_v, "ppo_conf": round(ppo_c, 4),
+            "ppo_vote": ppo_v, "ppo_conf": round(detail.get("confidences", {}).get("PPO", 0.0), 4),
             "transformer_vote": trans_v, "transformer_conf": round(trans_c, 4) if trans_c else 0.0,
             "ppo_action_num": detail.get("ppo_action", 1),
 

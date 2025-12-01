@@ -117,8 +117,9 @@ def predict_with_all_models(sequence_df: pd.DataFrame, seq_len: int = 60):
     if scaler_path:
         try:
             scaler = load(scaler_path)
-            X = scaler.transform(sequence_df[FEATURE_NAMES])
-            df = pd.DataFrame(X, columns=FEATURE_NAMES, index=sequence_df.index)
+            X = sequence_df[FEATURE_NAMES].values
+            X_scaled = scaler.transform(X)
+            df = pd.DataFrame(X_scaled, columns=FEATURE_NAMES, index=sequence_df.index)
         except Exception as e:
             logging.warning(f"Scaler failed: {e}")
 

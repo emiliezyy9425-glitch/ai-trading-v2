@@ -43,7 +43,7 @@ class TemporalBlock(nn.Module):
         return out + residual
 
 class TCN(nn.Module):
-    def __init__(self, n_features, channels=[64]*8, kernel_size=3, dropout=0.2):
+    def __init__(self, n_features, channels=[128]*12, kernel_size=3, dropout=0.3):
         super().__init__()
         layers = []
         for i in range(len(channels)):
@@ -60,8 +60,20 @@ class TCN(nn.Module):
         y = y[:, :, -1]
         return torch.sigmoid(self.classifier(y)).squeeze(-1)
 
+
+class FocalLoss(nn.Module):
+    def __init__(self, alpha=0.25, gamma=2.0):
+        super().__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+
+    def forward(self, inputs, targets):
+        bce = nn.BCELoss(reduction="none")(inputs, targets)
+        pt = torch.exp(-bce)
+        return (self.alpha * (1 - pt) ** self.gamma * bce).mean()
+
 class TradingDataset(Dataset):
-    def __init__(self, df, seq_len=60):
+    def __init__(self, df, seq_len=240):
         self.seq_len = seq_len
         self.features = [c for c in df.columns if c not in ["timestamp", "ticker", "decision", "price"]]
         self.X = df[self.features].values.astype(np.float32)
@@ -76,7 +88,7 @@ class TradingDataset(Dataset):
         i = self.valid_idx[idx]
         return torch.from_numpy(self.X[i-self.seq_len:i]), torch.tensor(self.y[i])
 
-def train_tcn(ticker="TQQQ", epochs=60):
+def train_tcn(ticker="TQQQ", epochs=200):
     data_path = Path("/app/data/historical_data_no_price.csv")
     if not data_path.exists():
         logger.error("数据文件不存在！请先运行数据收集")
@@ -96,17 +108,18 @@ def train_tcn(ticker="TQQQ", epochs=60):
     split = int(len(df) * 0.85)
     train_df, val_df = df.iloc[:split], df.iloc[split:]
 
-    train_set = TradingDataset(train_df)
-    val_set = TradingDataset(val_df)
-    train_loader = DataLoader(train_set, batch_size=256, shuffle=True)
+    seq_len = 240
+    train_set = TradingDataset(train_df, seq_len=seq_len)
+    val_set = TradingDataset(val_df, seq_len=seq_len)
+    train_loader = DataLoader(train_set, batch_size=512, shuffle=True)
     val_loader = DataLoader(val_set, batch_size=512)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     n_features = len(train_set.features)
     logger.info(f"检测到 {n_features} 个特征，自动构建 TCN...")
     model = TCN(n_features=n_features).to(device)
-    criterion = nn.BCELoss()
-    optimizer = optim.AdamW(model.parameters(), lr=0.001, weight_decay=1e-5)
+    criterion = FocalLoss()
+    optimizer = optim.AdamW(model.parameters(), lr=0.0005, weight_decay=1e-5)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 
     best_auc = 0.0
@@ -144,7 +157,7 @@ def train_tcn(ticker="TQQQ", epochs=60):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--ticker", type=str, default="TQQQ")
-    parser.add_argument("--epochs", type=int, default=60)
+    parser.add_argument("--epochs", type=int, default=200)
     args = parser.parse_args()
     train_tcn(args.ticker.upper(), args.epochs)
 

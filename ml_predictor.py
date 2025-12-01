@@ -180,15 +180,29 @@ def independent_model_decisions(preds, return_details=False):
         if len(prob)==0: continue
         p = float(prob[-1])
         conf = p if p > 0.5 else 1-p
-        thresh = {"rf":0.825,"xgb":0.945,"lgb":0.825,"lstm":0.99,"transformer":0.985}.get(name.lower()[:3],0.9)
-        if name=="LSTM": thresh=0.99
+        thresh = {
+            "rf": 0.80,      # 降低一点，更容易通过
+            "xgb": 0.92,     # 从 0.945 → 0.92
+            "lgb": 0.80,
+            "lstm": 0.88,    # 关键！从 0.99 降到 0.88（实测最稳）
+            "transformer": 0.90,
+        }.get(name.lower()[:3], 0.9)
+
+        # 强制覆盖 LSTM（防止未来改回来）
+        if name.lower().startswith("lstm"):
+            thresh = 0.88
         if conf >= thresh:
             q.append((name.lower()[:3], "Buy" if p>0.5 else "Sell", conf))
 
     if len(q) < 3:
         return "Hold" if not return_details else ("Hold", {"reason": "less than 3 qualified"})
 
-    nuclear = any((n=="xgb" and c>=0.94) or (n=="lstm" and c>=0.99) for n,_,c in q if n in ["xgb","lstm"])
+    nuclear = any(
+        (n == "xgb" and c >= 0.91) or 
+        (n == "lstm" and c >= 0.87) or
+        (n == "transformer" and c >= 0.89)
+        for n, _, c in q
+    )
     if not nuclear:
         return "Hold" if not return_details else ("Hold", {"reason": "no nuclear"})
 

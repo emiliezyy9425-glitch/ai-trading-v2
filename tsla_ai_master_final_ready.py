@@ -4858,9 +4858,14 @@ def process_single_ticker(
     current_position = get_position_size(ib, ticker)
 
     # After you get the decision from ml_predictor
-    decision, info = ml_predictor.independent_model_decisions(
+    result = ml_predictor.independent_model_decisions(
         (preds, ppo_meta), return_details=True
     )
+
+    if isinstance(result, str):
+        decision, info = result, {}
+    else:
+        decision, info = result
 
     ppo_action = info.get("ppo_action", 1)
 

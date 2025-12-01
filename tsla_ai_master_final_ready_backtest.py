@@ -492,9 +492,13 @@ def run_backtest(
         preds, ppo_meta = predict_with_all_models(
             sequence_df, seq_len=FEATURE_SEQUENCE_WINDOW
         )
-        decision, detail = independent_model_decisions(
+        result = independent_model_decisions(
             (preds, ppo_meta), return_details=True
         )
+        if isinstance(result, str):
+            decision, detail = result, {}
+        else:
+            decision, detail = result
         print(
             f"DEBUG: {now} → {decision} | {detail.get('reason', 'no reason')}"
         )

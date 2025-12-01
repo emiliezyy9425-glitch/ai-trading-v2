@@ -7,15 +7,14 @@ class PositionalEncoding(nn.Module):
     def __init__(self, d_model: int, max_len: int = 500):
         super().__init__()
         pe = torch.zeros(max_len, d_model)
-        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        position = torch.arange(0, max_len).unsqueeze(1).float()
         div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
         pe[:, 0::2] = torch.sin(position * div_term)
         pe[:, 1::2] = torch.cos(position * div_term)
-        pe = pe.unsqueeze(0)  # (1, max_len, d_model)
-        self.register_buffer('pe', pe)
+        self.register_buffer('pe', pe.unsqueeze(0))
 
     def forward(self, x):
-        return x + self.pe[:, :x.size(1), :]
+        return x + self.pe[:, :x.size(1)]
 
 
 class TransformerModel(nn.Module):
@@ -35,7 +34,7 @@ class TransformerModel(nn.Module):
 
         # Input projection
         self.input_proj = nn.Linear(input_size, d_model)
-        self.pos_encoder = PositionalEncoding(d_model, max_len=max_seq_len + 10)
+        self.pos_encoder = PositionalEncoding(d_model, max_len=500)  # 500 is more than enough
 
         # Transformer
         encoder_layer = nn.TransformerEncoderLayer(

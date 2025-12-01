@@ -84,9 +84,13 @@ def train_tcn(ticker="TQQQ", epochs=60):
 
     df = pd.read_csv(data_path)
     df = df[df["ticker"] == ticker].copy()
-    if len(df) < 1000:
-        logger.error(f"{ticker} 数据不足")
+
+    # 只用有信号的行训练
+    df = df[df["decision"].isin([0, 1])].copy()
+    if len(df) < 100:
+        logger.error(f"{ticker} 有信号样本太少")
         return
+    logger.info(f"训练样本: {len(df)} 条 | Buy(1): {sum(df['decision']==1)} | Sell(0): {sum(df['decision']==0)}")
 
     split = int(len(df) * 0.85)
     train_df, val_df = df.iloc[:split], df.iloc[split:]

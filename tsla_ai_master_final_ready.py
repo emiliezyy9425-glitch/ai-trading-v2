@@ -2163,7 +2163,47 @@ def _seed_feature_history_from_cache(ticker: str) -> bool:
     return False
 
 
-def _seed_feature_history_from_ibkr(ticker: str, ib_client: Optional[IB]) -> bool:
+def _append_to_historical_dataset(dataset: pd.DataFrame) -> None:
+    """Append freshly generated feature rows to ``historical_data.csv``."""
+
+    if dataset.empty:
+        return
+
+    path = HISTORICAL_DATA_FILE
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+
+    frame = dataset.copy()
+    if "timestamp" not in frame.columns:
+        if frame.index.name == "timestamp" or isinstance(frame.index, pd.DatetimeIndex):
+            frame = frame.reset_index()
+            frame.rename(columns={"index": "timestamp"}, inplace=True)
+        else:
+            logger.warning("⚠️ Unable to persist dataset without timestamp column.")
+            return
+
+    frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True, errors="coerce")
+    frame = frame.dropna(subset=["timestamp"]).sort_values("timestamp")
+
+    ordered_columns = ["timestamp", "ticker", *FEATURE_NAMES]
+    frame = frame.reindex(columns=ordered_columns, fill_value=0)
+
+    header = not os.path.exists(path) or os.path.getsize(path) == 0
+    frame.to_csv(path, mode="a", header=header, index=False)
+
+    ticker_value = ""
+    if "ticker" in frame.columns and len(frame):
+        ticker_value = str(frame["ticker"].iloc[0])
+
+    logger.info(
+        "💾 Appended %d feature rows for %s to historical_data.csv.",
+        len(frame),
+        ticker_value,
+    )
+
+
+def _seed_feature_history_from_ibkr(
+    ticker: str, ib_client: Optional[IB], persist_to_historical: bool = False
+) -> bool:
     """Download hourly bars from IBKR and derive features for sequence seeding."""
 
     if ib_client is None:
@@ -2261,6 +2301,16 @@ def _seed_feature_history_from_ibkr(ticker: str, ib_client: Optional[IB]) -> boo
 
     _persist_ibkr_seed_cache(ticker, dataset)
 
+    if persist_to_historical:
+        try:
+            _append_to_historical_dataset(dataset)
+        except Exception as exc:  # pragma: no cover - filesystem failures are rare
+            logger.warning(
+                "⚠️ Failed to append IBKR-derived features for %s to historical_data.csv: %s",
+                ticker,
+                exc,
+            )
+
     logger.info(
         "📥 Seeded %d/%d sequence rows for %s using IBKR historical data.",
         appended,
@@ -2343,7 +2393,9 @@ def _seed_feature_history_from_historical_data(ticker: str, ib_client: Optional[
         seeded = _seed_feature_history_from_cache(ticker)
 
     if not seeded:
-        seeded = _seed_feature_history_from_ibkr(ticker, ib_client)
+        seeded = _seed_feature_history_from_ibkr(
+            ticker, ib_client, persist_to_historical=True
+        )
 
     if seeded:
         _SEEDED_SEQUENCE_TICKERS.add(ticker)

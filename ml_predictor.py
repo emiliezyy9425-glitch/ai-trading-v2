@@ -273,7 +273,7 @@ def predict_rf(df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
     if df.empty:
         return np.array([]), np.array([])
     model = load(path)
-    X = df.tail(1)
+    X = _prepare_features(df.tail(1))
     prob = float(model.predict_proba(X)[0][1])
     return np.array([prob]), np.array([1 if prob > 0.5 else 0])
 
@@ -285,7 +285,7 @@ def predict_xgb(df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
     if df.empty:
         return np.array([]), np.array([])
     model = load(path)
-    X = df.tail(1)
+    X = _prepare_features(df.tail(1))
     prob = float(model.predict_proba(X)[0][1])
     return np.array([prob]), np.array([1 if prob > 0.5 else 0])
 
@@ -297,7 +297,7 @@ def predict_lgb(df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
     if df.empty:
         return np.array([]), np.array([])
     model = load(path)
-    X = df.tail(1)
+    X = _prepare_features(df.tail(1))
     prob = float(model.predict_proba(X)[0][1])
     return np.array([prob]), np.array([1 if prob > 0.5 else 0])
 

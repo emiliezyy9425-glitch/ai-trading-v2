@@ -4857,16 +4857,35 @@ def process_single_ticker(
     preds, ppo_meta = predict_with_all_models(sequence_df)
     current_position = get_position_size(ib, ticker)
 
-    # After you get the decision from ml_predictor
-    result = ml_predictor.independent_model_decisions(
-        (preds, ppo_meta), return_details=True
-    )
+    # === FINAL LIVE DECISION LOGIC (MUST BE HERE) ===
+    try:
+        result = ml_predictor.independent_model_decisions(
+            preds,
+            ppo_meta=ppo_meta,
+            return_details=True,
+        )
 
-    if isinstance(result, str):
-        decision, info = result, {}
-    else:
-        decision, info = result
+        # Handle both old and new return formats (bulletproof)
+        if isinstance(result, str):
+            decision = result
+            info = {}
+        else:
+            decision, info = result
 
+        trigger = info.get("trigger", "UNKNOWN")
+        confidence = info.get("confidence", 0.0)
+        reason = info.get("reason", "No reason")
+
+        logger.info(
+            f"FINAL DECISION: {decision} | Trigger: {trigger} | Conf: {confidence:.3f} | {reason}"
+        )
+
+    except Exception as e:
+        logger.error(f"Decision engine failed: {e}\n{traceback.format_exc()}")
+        decision, info = "Hold", {}
+
+    trigger = info.get("trigger", "UNKNOWN")
+    confidence = float(info.get("confidence", 0.0))
     ppo_action = info.get("ppo_action", 1)
 
     if decision == "Hold":

@@ -4913,7 +4913,6 @@ def process_single_ticker(
     try:
         result = ml_predictor.independent_model_decisions(
             preds,
-            ppo_meta=ppo_meta,
             return_details=True,
         )
 

@@ -68,6 +68,10 @@ ENSEMBLE_THRESHOLDS: dict[str, float] = {
     "ppo": 0.80,
 }
 
+# NUCLEAR CONFIRMATION — this is what makes it literally perfect
+NUCLEAR_XGB = 0.940
+NUCLEAR_LSTM = 0.990
+
 
 def _resolve_scaler_path() -> Optional[Path]:
     """Best-effort discovery of the StandardScaler used during training."""

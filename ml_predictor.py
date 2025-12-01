@@ -252,15 +252,15 @@ def ultimate_decision(preds, ppo_meta=None):
         return "EXECUTE", seq_vote, "DEEPSEQ_NUCLEAR"
 
     # Tier 1: Triple Tree Nuclear (second highest)
-    tree_votes = [vote.get(m) for m in ["RandomForest", "XGBoost", "LightGBM"] if m in vote]
-    if (
-        rf_conf >= 0.78
-        and conf.get("XGBoost", 0) >= OPTIMAL_CONF["xgb"]
-        and conf.get("LightGBM", 0) >= OPTIMAL_CONF["lgb"]
-        and len(tree_votes) == 3
-        and len(set(tree_votes)) == 1
-    ):
-        return "EXECUTE", rf_vote, "TRIPLE_TREE_NUCLEAR"
+    tree_models = ["RandomForest", "XGBoost", "LightGBM"]
+    if all(m in vote for m in tree_models):
+        if (
+            rf_conf >= 0.78
+            and conf.get("XGBoost", 0) >= OPTIMAL_CONF["xgb"]
+            and conf.get("LightGBM", 0) >= OPTIMAL_CONF["lgb"]
+            and len(set(vote[m] for m in tree_models)) == 1
+        ):
+            return "EXECUTE", rf_vote, "TRIPLE_TREE_NUCLEAR"
 
     # Tier 2: RandomForest Solo (daily bread)
     if rf_conf >= OPTIMAL_CONF["rf"]:

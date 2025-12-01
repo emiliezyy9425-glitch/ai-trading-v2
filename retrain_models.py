@@ -770,6 +770,11 @@ def train_transformer(params: Dict[str, Any]):
         d_model = trial.suggest_int("d_model", 64, 512, step=32)
         # make d_model divisible by nhead
         d_model = ((d_model // nhead) + 1) * nhead
+        # enforce even dimensionality for positional encoding stability
+        if d_model % 2 != 0:
+            d_model += 1
+        # align to nearest multiple of 8 for performance and cap at 512
+        d_model = ((d_model + 7) // 8) * 8
         d_model = min(d_model, 512)
 
         num_layers = trial.suggest_int("num_layers", 1, 6)

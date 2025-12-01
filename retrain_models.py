@@ -494,7 +494,7 @@ def train_lstm(params: Dict[str, Any]):
                 inputs, labels = inputs.to(device), labels.to(device)
                 optimizer.zero_grad()
                 outputs = model(inputs)
-                loss = criterion(outputs, labels.squeeze())
+                loss = criterion(outputs.squeeze(-1), labels.float())
                 loss.backward()
                 optimizer.step()
 

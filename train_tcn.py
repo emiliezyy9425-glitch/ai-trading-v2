@@ -74,7 +74,7 @@ class TradingDataset(Dataset):
         return torch.from_numpy(self.X[i-self.seq_len:i]), torch.tensor(self.y[i])
 
 def train_tcn(ticker="TQQQ", epochs=60):
-    data_path = Path("/app/data/historical_data_no_price.csv")
+    data_path = Path("/app/data/historical_data.csv")
     if not data_path.exists():
         logger.error("数据文件不存在！请先运行数据收集")
         return

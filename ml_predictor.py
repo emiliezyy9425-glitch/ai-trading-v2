@@ -23,11 +23,21 @@ def predict_lstm(df: pd.DataFrame, seq_len: int = 60):
 
     try:
         from models.lstm import AttentiveBiLSTM
-        # 关键：强制使用旧架构参数（hidden=151）
-        model = AttentiveBiLSTM(input_size=len(FEATURE_NAMES), hidden_size=151, num_layers=3)
-        state_dict = torch.load(path, map_location="cpu")
-        model.load_state_dict(state_dict)
-        model.eval()
+        
+        # 终极兼容：先尝试 2 层（你真实模型），失败再尝试 3 层
+        for num_layers in [2, 3]:
+            try:
+                model = AttentiveBiLSTM(input_size=len(FEATURE_NAMES), hidden_size=151, num_layers=num_layers)
+                state_dict = torch.load(path, map_location="cpu")
+                model.load_state_dict(state_dict)
+                logging.info(f"LSTM loaded successfully with {num_layers} layers")
+                model.eval()
+                break
+            except Exception as e:
+                if num_layers == 2:
+                    continue  # 再试 3 层
+                else:
+                    raise e
     except Exception as e:
         logging.error(f"LSTM load failed: {e}")
         return np.array([]), np.array([])

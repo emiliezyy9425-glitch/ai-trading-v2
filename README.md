@@ -18,7 +18,7 @@ See `docs/workflow_diagram.md` for a visual end-to-end workflow diagram that con
 2. **Compute indicators** – derive RSI, MACD, Bollinger Bands, Fibonacci levels, volume signals, and other features via `indicators.py` for 1h/4h/1d windows.
 3. **Generate model inputs** – align the live features to the `FEATURE_NAMES` schema used during training.
 4. **Predict with multiple models** – `ml_predictor.predict_with_all_models` loads Random Forest, XGBoost, LightGBM, LSTM, PPO, and a small Transformer model. Use `ml_predictor.predict_with_all_models_for_tickers` to score several tickers in one call while reusing the cached model instances.
-5. **Independent model decision** – `ml_predictor.independent_model_decisions` evaluates each model separately and triggers any whose confidence beats its own threshold (LSTM 0.985, Transformer 0.982, XGBoost 0.78, LightGBM 0.76, PPO 0.85, RandomForest 0.80). The first triggered model in priority order drives the trade when multiple agree; otherwise the agent holds.
+5. **Ultimate decision** – `ml_predictor.independent_model_decisions` now delegates to a DeepSeq-first policy: when both LSTM (≥0.96) and Transformer (≥0.985) align, the "DEEPSEQ_NUCLEAR" signal executes immediately. Otherwise the agent looks for a unanimous "TRIPLE_TREE_NUCLEAR" vote from RandomForest/XGBoost/LightGBM, falls back to a confident RandomForest solo read, and only then uses PPO as a rare tie-breaker.
 6. **Execute trades** – `tsla_ai_master_final_ready.py` submits orders through Interactive Brokers, applying position sizing, stop orders, and risk checks.
 7. **Log results** – each executed trade is appended to `data/trade_log.csv` alongside the feature snapshot and metadata for later analysis.
 8. **Self-learn and retrain** – `self_learn.py` labels past trades with future returns and trains updated models in `models/`. `auto_train.py` can watch `data/historical_data.csv` and trigger retraining when new data arrives.
@@ -334,4 +334,3 @@ docker compose run --rm tsla_trading_app \
 The script connects to Interactive Brokers, aggregates option positions across
 all tickers, and reuses the same safeguards as the per-ticker closing logic to
 submit appropriate orders.
-

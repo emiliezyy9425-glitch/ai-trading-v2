@@ -8,6 +8,14 @@ from sequence_utils import pad_sequence_to_length
 
 MODEL_DIR = Path("/app/models")
 
+OPTIMAL_CONF = {
+    "lstm": 0.96,
+    "transformer": 0.985,
+    "xgb": 0.78,
+    "lgb": 0.76,
+    "rf": 0.80,
+}
+
 def _find(*names):
     for name in names:
         for pattern in name.split(","):
@@ -177,70 +185,92 @@ FEATURE_ALIASES = {
 # 核确认（最强逻辑）
 def independent_model_decisions(preds, return_details=False):
     preds, ppo_meta = preds if isinstance(preds, tuple) else (preds, {})
-    q = []
-    vote_detail = {}
-    conf_detail = {}
 
-    for name, (prob, pred) in preds.items():
-        if name not in ["RandomForest","XGBoost","LightGBM","LSTM","Transformer"]:
-            continue
-        if len(prob) == 0:
-            continue
-        p = float(prob[-1])
-        c = p if p > 0.5 else 1 - p
-        vote = "Buy" if p > 0.5 else "Sell"
-        short_name = name.lower()[:3] if name != "RandomForest" else "rf"
-        vote_detail[name] = vote
-        conf_detail[name] = c
+    prob, conf, vote = _collect_prob_conf_vote(preds)
+    status, action, trigger = ultimate_decision(preds, ppo_meta)
 
-        thresh = {
-            "rf": 0.80, "xgb": 0.91, "lgb": 0.80,
-            "lstm": 0.88, "transformer": 0.90
-        }.get(short_name, 0.9)
+    decision = action if status == "EXECUTE" else "Hold"
 
-        if c >= thresh:
-            q.append((short_name, vote, c))
+    def _mean_conf(model_names):
+        vals = [conf[m] for m in model_names if m in conf]
+        return float(np.mean(vals)) if vals else 0.0
 
-    # 记录 PPO（虽然不参与核确认）
-    vote_detail["PPO"] = "Aggressive" if ppo_meta.get("action", 1) == 2 else "Hold"
-    conf_detail["PPO"] = float(ppo_meta.get("action_conf", ppo_meta.get("conf", [0.6]))[0])
+    confidence_lookup = {
+        "DEEPSEQ_NUCLEAR": _mean_conf(["LSTM", "Transformer"]),
+        "TRIPLE_TREE_NUCLEAR": _mean_conf(["RandomForest", "XGBoost", "LightGBM"]),
+        "RF_SOLO": conf.get("RandomForest", 0.0),
+        "PPO_BREAKER": _mean_conf(["RandomForest"]),
+    }
 
-    if len(q) < 3:
-        decision = "Hold"
-        reason = "less than 3 qualified"
+    ppo_conf_raw = ppo_meta.get("action_conf", ppo_meta.get("conf", [0.6]))
+    if isinstance(ppo_conf_raw, (list, np.ndarray)):
+        ppo_conf = float(ppo_conf_raw[0]) if len(ppo_conf_raw) else 0.6
     else:
-        # 核确认
-        nuclear = any(
-            (n == "xgb" and c >= 0.90) or
-            (n == "lstm" and c >= 0.87) or
-            (n == "transformer" and c >= 0.89)
-            for n, _, c in q
-        )
-        if not nuclear:
-            decision = "Hold"
-            reason = "no nuclear"
-        else:
-            # 关键：根据多数票决定 Buy 还是 Sell
-            buy_votes = sum(1 for _, vote, _ in q if vote == "Buy")
-            sell_votes = len(q) - buy_votes
-            if buy_votes > sell_votes:
-                decision = "Buy"
-                reason = "NUCLEAR BUY!"
-            else:
-                decision = "Sell"
-                reason = "NUCLEAR SELL!"
+        ppo_conf = float(ppo_conf_raw)
 
     if not return_details:
         return decision
 
     return decision, {
-        "reason": reason,
-        "confidence": np.mean([c for _,_,c in q]) if q else 0.0,
-        "qualified_models": len(q),
-        "votes": vote_detail,
-        "confidences": conf_detail,
+        "reason": trigger,
+        "trigger": trigger,
+        "decision_state": status,
+        "confidence": confidence_lookup.get(trigger, 0.0),
+        "qualified_models": len(prob),
+        "votes": {**vote, "PPO": "Aggressive" if ppo_meta.get("action", 1) == 2 else "Hold"},
+        "confidences": {**conf, "PPO": ppo_conf},
         "ppo_action": ppo_meta.get("action", 1),
         "ppo_entropy": ppo_meta.get("entropy", 0.5),
-        "nuclear_buy_votes": sum(1 for _, v, _ in q if v == "Buy"),
-        "nuclear_sell_votes": sum(1 for _, v, _ in q if v == "Sell"),
+        "nuclear_buy_votes": sum(1 for v in vote.values() if v == "Buy"),
+        "nuclear_sell_votes": sum(1 for v in vote.values() if v == "Sell"),
     }
+
+
+def _collect_prob_conf_vote(preds):
+    prob = {name: float(p[-1]) if len(p) > 0 else 0.5 for name, (p, _) in preds.items() if name != "PPO"}
+    conf = {k: v if v > 0.5 else 1 - v for k, v in prob.items()}
+    vote = {k: "Buy" if prob[k] > 0.5 else "Sell" for k in prob}
+    return prob, conf, vote
+
+
+def ultimate_decision(preds, ppo_meta=None):
+    ppo_meta = ppo_meta or {}
+    prob, conf, vote = _collect_prob_conf_vote(preds)
+
+    rf_conf = conf.get("RandomForest", 0)
+    rf_vote = vote.get("RandomForest", "Hold")
+
+    # === FIXED ORDER: DEEPSEQ FIRST (highest conviction) ===
+    lstm_conf = conf.get("LSTM", 0)
+    trans_conf = conf.get("Transformer", 0)
+    if lstm_conf >= OPTIMAL_CONF["lstm"] and trans_conf >= OPTIMAL_CONF["transformer"]:
+        seq_vote = (
+            "Buy"
+            if (prob.get("LSTM", 0.5) > 0.5 and prob.get("Transformer", 0.5) > 0.5)
+            else "Sell"
+        )
+        return "EXECUTE", seq_vote, "DEEPSEQ_NUCLEAR"
+
+    # Tier 1: Triple Tree Nuclear (second highest)
+    if (
+        rf_conf >= 0.78
+        and conf.get("XGBoost", 0) >= OPTIMAL_CONF["xgb"]
+        and conf.get("LightGBM", 0) >= OPTIMAL_CONF["lgb"]
+        and vote.get("RandomForest") == vote.get("XGBoost", "Hold") == vote.get("LightGBM", "Hold")
+    ):
+        return "EXECUTE", rf_vote, "TRIPLE_TREE_NUCLEAR"
+
+    # Tier 2: RandomForest Solo (daily bread)
+    if rf_conf >= OPTIMAL_CONF["rf"]:
+        return "EXECUTE", rf_vote, "RF_SOLO"
+
+    # Tier 3: PPO tie-breaker (rare)
+    if (
+        0.75 <= rf_conf < 0.78
+        and abs(conf.get("XGBoost", 0) - 0.5) < 0.15
+        and abs(conf.get("LightGBM", 0) - 0.5) < 0.15
+        and ppo_meta.get("action", 1) == 2
+    ):
+        return "EXECUTE", "Buy", "PPO_BREAKER"
+
+    return "HOLD", "Hold", "NO_SIGNAL"

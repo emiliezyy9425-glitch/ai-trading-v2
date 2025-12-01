@@ -171,6 +171,10 @@ def _finalise_feature_frame(df: pd.DataFrame, ticker: str | None = None, start=N
     df = df.copy()
     df["ticker"] = ticker or ""
 
+    if "timestamp" not in df.columns:
+        if df.index.name == "timestamp" or isinstance(df.index, pd.DatetimeIndex):
+            df["timestamp"] = df.index
+
     defaults = default_feature_values(df.columns)
     for col, default in defaults.items():
         if col not in df.columns:

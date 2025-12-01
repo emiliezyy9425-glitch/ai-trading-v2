@@ -51,7 +51,6 @@ class AttentiveBiLSTM(nn.Module):
             nn.LayerNorm(lstm_out_size // 2),
             nn.Dropout(0.2),
             nn.Linear(lstm_out_size // 2, 1),
-            nn.Sigmoid()
         )
 
         self._init_weights()
@@ -78,7 +77,10 @@ class AttentiveBiLSTM(nn.Module):
 
         # === ATTENTION ===
         # Use last hidden state as query
-        query = h_n[-2:].transpose(0, 1).contiguous().view(batch_size, -1)  # (B, D*H)
+        if self.bidirectional:
+            query = torch.cat((h_n[-2], h_n[-1]), dim=-1)  # (B, D*H)
+        else:
+            query = h_n[-1]  # (B, H)
         query = self.attention_query(query).unsqueeze(1)  # (B, 1, D*H)
 
         keys = self.attention_key(lstm_out)  # (B, S, D*H)
@@ -89,5 +91,5 @@ class AttentiveBiLSTM(nn.Module):
 
         # Final prediction
         out = self.dropout(context)
-        prob = self.classifier(out)
-        return prob.squeeze(-1)  # (batch_size,)
+        logits = self.classifier(out)
+        return logits.squeeze(-1)  # (batch_size,)

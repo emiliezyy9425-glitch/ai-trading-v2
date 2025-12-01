@@ -504,7 +504,7 @@ def train_lstm(params: Dict[str, Any]):
             for inputs, _ in val_loader:
                 inputs = inputs.to(device)
                 outputs = model(inputs)
-                val_preds.append(outputs.cpu().numpy())
+                val_preds.append(torch.sigmoid(outputs).cpu().numpy())
 
         if val_preds:
             val_preds = np.concatenate(val_preds).flatten()
@@ -536,7 +536,7 @@ def train_lstm(params: Dict[str, Any]):
         seq_len=params["time_steps"]
     ).to(device)
 
-    criterion = nn.BCELoss()
+    criterion = nn.BCEWithLogitsLoss()
     optimizer = optim.Adam(model.parameters(), lr=params["learning_rate"])
 
     train_dataset = TensorDataset(torch.tensor(X_train_lstm, dtype=torch.float32), torch.tensor(y_train.values, dtype=torch.float32).unsqueeze(1))
@@ -548,7 +548,7 @@ def train_lstm(params: Dict[str, Any]):
             inputs, labels = inputs.to(device), labels.to(device)
             optimizer.zero_grad()
             outputs = model(inputs)
-            loss = criterion(outputs, labels.squeeze())
+            loss = criterion(outputs, labels.view(-1))
             loss.backward()
             optimizer.step()
 
@@ -561,7 +561,7 @@ def train_lstm(params: Dict[str, Any]):
         for inputs, _ in val_loader:
             inputs = inputs.to(device)
             outputs = model(inputs)
-            val_preds.append(outputs.cpu().numpy())
+            val_preds.append(torch.sigmoid(outputs).cpu().numpy())
 
     val_preds = np.concatenate(val_preds).flatten()
 
@@ -574,7 +574,7 @@ def train_lstm(params: Dict[str, Any]):
         for inputs, _ in test_loader:
             inputs = inputs.to(device)
             outputs = model(inputs)
-            test_preds.append(outputs.cpu().numpy())
+            test_preds.append(torch.sigmoid(outputs).cpu().numpy())
 
     test_preds = np.concatenate(test_preds).flatten()
     test_acc = accuracy_score(y_test, (test_preds > 0.5).astype(int))

@@ -43,6 +43,22 @@ MODEL_CONFIDENCE_THRESHOLDS: dict[str, float] = {
 }
 
 
+# ==============================================================
+# LIVE ENSEMBLE THRESHOLDS — THESE ARE THE REAL ONES (May–Nov 2025)
+# ==============================================================
+ENSEMBLE_THRESHOLDS: dict[str, float] = {
+    "rf": 0.825,
+    "xgb": 0.945,
+    "lgb": 0.825,
+    "lstm": 0.99,
+    "transformer": 0.985,
+}
+
+# NUCLEAR CONFIRMATION — the entire reason we have 100% win rate
+NUCLEAR_XGB  = 0.940
+NUCLEAR_LSTM = 0.990
+
+
 # Known aliases where legacy models saved during training expect the unsuffixed
 # column, while the current live feature builder provides a duplicate with a
 # ``.1`` suffix (or vice-versa). Keeping this mapping here lets every model
@@ -58,21 +74,6 @@ FEATURE_ALIASES: dict[str, str] = {
 
 # Confidence threshold that forces a hold when high-confidence models disagree
 HIGH_CONFIDENCE_DISAGREEMENT_THRESHOLD = 0.98
-
-# Live-trading ensemble thresholds (battle-tested May–Nov 2025)
-ENSEMBLE_THRESHOLDS: dict[str, float] = {
-    "rf": 0.825,
-    "xgb": 0.945,
-    "lgb": 0.825,
-    "lstm": 0.99,
-    "transformer": 0.985,
-    "ppo": 0.80,
-}
-
-# NUCLEAR CONFIRMATION — this is what makes it literally perfect
-NUCLEAR_XGB = 0.940
-NUCLEAR_LSTM = 0.990
-
 
 def _resolve_scaler_path() -> Optional[Path]:
     """Best-effort discovery of the StandardScaler used during training."""

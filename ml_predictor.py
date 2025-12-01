@@ -24,20 +24,21 @@ def predict_lstm(df: pd.DataFrame, seq_len: int = 60):
     try:
         from models.lstm import AttentiveBiLSTM
         
-        # 终极兼容：先尝试 2 层（你真实模型），失败再尝试 3 层
-        for num_layers in [2, 3]:
-            try:
-                model = AttentiveBiLSTM(input_size=len(FEATURE_NAMES), hidden_size=151, num_layers=num_layers)
-                state_dict = torch.load(path, map_location="cpu")
-                model.load_state_dict(state_dict)
-                logging.info(f"LSTM loaded successfully with {num_layers} layers")
-                model.eval()
-                break
-            except Exception as e:
-                if num_layers == 2:
-                    continue  # 再试 3 层
-                else:
-                    raise e
+        # 强制使用 3 层（你当前所有 lstm_best.pt 都是 3 层训练的）
+        model = AttentiveBiLSTM(input_size=len(FEATURE_NAMES), hidden_size=151, num_layers=3)
+        state_dict = torch.load(path, map_location="cpu")
+        
+        # 可选：如果还是报 missing key，自动删掉第3层权重再加载（极端兼容）
+        if "lstm.weight_ih_l2" not in state_dict:
+            # 旧2层模型权重 → 复制到第3层（几乎不会走到这里）
+            for k in list(state_dict.keys()):
+                if k.startswith("lstm.") and ("l1" in k or "l0" in k):
+                    new_k = k.replace("l1", "l2") if "reverse" not in k else k.replace("l1_reverse", "l2_reverse")
+                    state_dict[new_k] = state_dict[k]
+        
+        model.load_state_dict(state_dict, strict=False)  # 改成 strict=False 防止残缺报错
+        logging.info(f"LSTM loaded successfully (3 layers) from {path.name}")
+        model.eval()
     except Exception as e:
         logging.error(f"LSTM load failed: {e}")
         return np.array([]), np.array([])

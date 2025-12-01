@@ -147,6 +147,38 @@ def load_data() -> Tuple[pd.DataFrame, pd.Series]:
     X = df[FEATURE_NAMES]
     y = df["label"]
     return X, y
+
+
+def _resolve_training_data_path(raw_path: str) -> Path:
+    """Resolve the transformer training dataset path.
+
+    The helper accepts absolute paths, project-root-relative paths, or strings
+    that include a leading ``data/`` prefix. The latter is normalized to the
+    configured data directory via :func:`resolve_data_path` so that Docker
+    mounts (``/app/data``) and local checkouts (``./data``) are both supported
+    transparently.
+    """
+
+    candidate = Path(raw_path)
+    if candidate.is_absolute():
+        return candidate
+
+    project_root = Path(__file__).resolve().parent
+
+    # Directly under the repo (e.g., "data/historical_data_no_price.csv")
+    repo_candidate = project_root / candidate
+    if repo_candidate.exists():
+        return repo_candidate
+
+    # If the path already includes a "data/" prefix, strip it before resolving
+    # against the configured data directory to avoid "/app/data/data/...".
+    parts = candidate.parts
+    if parts and parts[0].lower() == "data":
+        normalized = resolve_data_path(*parts[1:])
+    else:
+        normalized = resolve_data_path(candidate)
+
+    return normalized
 # --------------------------------------------------------------------------- #
 # New function to log training results
 # --------------------------------------------------------------------------- #
@@ -717,68 +749,95 @@ logger = logging.getLogger(__name__)
 def train_transformer(params: Dict[str, Any]):
     logger.info("=== STARTING TRANSFORMER TRAINING (FIXED NO-LEAK VERSION) ===")
 
-    X, y = load_data()  # ← already has correct forward-looking label: close[t+5] > close[t]*1.01
-
-    # CRITICAL FIX #1: Proper sequence creation — NO LEAKAGE
-    def create_sequences_proper(X_np: np.ndarray, y_np: np.ndarray, seq_len: int):
-        if len(X_np) <= seq_len:
-            return np.array([]), np.array([])
-        
-        # We can only make (len - seq_len) sequences because:
-        # Sequence 0: rows 0 to 119 → predicts label at row 119 → which looks +5 ahead → needs row 124
-        # So we must stop seq_len + 5 before the end
-        max_start = len(X_np) - seq_len - 5 + 1  # +1 because range is inclusive
-        if max_start <= 0:
-            return np.array([]), np.array([])
-
-        sequences = []
-        labels = []
-        for i in range(max_start):
-            sequences.append(X_np[i:i + seq_len])
-            # Label corresponds to the END of the sequence (row i+seq_len-1)
-            # That label uses close[i+seq_len-1 + 5], which is safe because i+seq_len-1+5 < len(X_np)
-            labels.append(y_np[i + seq_len - 1])
-
-        return np.array(sequences), np.array(labels)
-
-    # Convert to numpy once
-    X_np = X.values
-    y_np = y.values.astype(np.float32)
-
-    # Create sequences safely
-    X_seq, y_seq = create_sequences_proper(X_np, y_np, seq_len=params.get("time_steps", 120))
-    if len(X_seq) == 0:
-        logger.error("Not enough data to create even one clean sequence. Need >125 rows per ticker.")
+    data_path = params.get("data_path")
+    if not data_path:
+        logger.error("Transformer params must include a 'data_path' pointing to historical_data_no_price.csv")
         return
 
-    logger.info(f"Created {len(X_seq):,} clean forward-looking sequences (no leakage)")
+    dataset_path = _resolve_training_data_path(data_path)
+    if not dataset_path.exists():
+        logger.error("Transformer dataset not found at %s", dataset_path)
+        return
 
-    # Train/val split (time-series safe)
-    split_idx = int(len(X_seq) * 0.85)
-    X_train_seq, X_val_seq = X_seq[:split_idx], X_seq[split_idx:]
-    y_train_seq, y_val_seq = y_seq[:split_idx], y_seq[split_idx:]
+    ticker = params.get("ticker", "TQQQ").upper()
+    seq_len = params.get("time_steps", 120)
 
-    # Scaling — fit only on training data
+    df = pd.read_csv(dataset_path)
+    if "timestamp" in df.columns:
+        df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+        df = df.sort_values("timestamp")
+
+    if "ticker" in df.columns:
+        df["ticker"] = df["ticker"].astype(str).str.upper()
+        df = df[df["ticker"] == ticker].copy()
+        if df.empty:
+            logger.error("No rows found for ticker %s in %s", ticker, dataset_path)
+            return
+
+    if "decision" not in df.columns:
+        logger.error("Dataset must include a 'decision' column for labels")
+        return
+
+    df = df[df["decision"].isin([0, 1])].dropna(subset=["decision"])
+    if len(df) <= seq_len:
+        logger.error("Not enough rows (%d) to build sequences of length %d", len(df), seq_len)
+        return
+
+    feature_cols = [c for c in df.columns if c not in ["timestamp", "ticker", "decision", "price"]]
+    if not feature_cols:
+        logger.error("No feature columns found after excluding metadata columns")
+        return
+
+    split_idx = int(len(df) * 0.85)
+    train_df, val_df = df.iloc[:split_idx].copy(), df.iloc[split_idx:].copy()
+    if len(train_df) <= seq_len or len(val_df) <= seq_len:
+        logger.error("Train/val split leaves insufficient rows for sequences (train=%d, val=%d)", len(train_df), len(val_df))
+        return
+
     scaler = StandardScaler()
-    X_train_flat = X_train_seq.reshape(-1, X_train_seq.shape[-1])
-    scaler.fit(X_train_flat)
+    train_features = scaler.fit_transform(train_df[feature_cols].fillna(0))
+    val_features = scaler.transform(val_df[feature_cols].fillna(0))
 
-    # Apply scaling
-    X_train_seq = scaler.transform(X_train_seq.reshape(-1, X_train_seq.shape[-1])).reshape(X_train_seq.shape)
-    X_val_seq = scaler.transform(X_val_seq.reshape(-1, X_val_seq.shape[-1])).reshape(X_val_seq.shape)
+    train_targets = train_df["decision"].astype(np.float32).values
+    val_targets = val_df["decision"].astype(np.float32).values
 
-    # Datasets
-    train_ds = TensorDataset(torch.tensor(X_train_seq, dtype=torch.float32), 
-                            torch.tensor(y_train_seq, dtype=torch.float32))
-    val_ds = TensorDataset(torch.tensor(X_val_seq, dtype=torch.float32), 
-                          torch.tensor(y_val_seq, dtype=torch.float32))
+    class SequenceDataset(Dataset):
+        def __init__(self, features: np.ndarray, targets: np.ndarray, seq_len: int):
+            self.features = features.astype(np.float32)
+            self.targets = targets.astype(np.float32)
+            self.seq_len = seq_len
+            self.valid_idx = np.arange(seq_len, len(self.features))
+
+        def __len__(self):
+            return len(self.valid_idx)
+
+        def __getitem__(self, idx):
+            i = self.valid_idx[idx]
+            return (
+                torch.from_numpy(self.features[i - self.seq_len:i]),
+                torch.tensor(self.targets[i]),
+            )
+
+    train_ds = SequenceDataset(train_features, train_targets, seq_len)
+    val_ds = SequenceDataset(val_features, val_targets, seq_len)
+    if len(train_ds) == 0 or len(val_ds) == 0:
+        logger.error("Unable to create training/validation sequences with seq_len=%d", seq_len)
+        return
+
+    logger.info(
+        "Prepared %d training and %d validation sequences for %s from %s",
+        len(train_ds),
+        len(val_ds),
+        ticker,
+        dataset_path,
+    )
 
     train_loader = DataLoader(train_ds, batch_size=params["batch_size"], shuffle=True, drop_last=True)
     val_loader = DataLoader(val_ds, batch_size=params["batch_size"], shuffle=False)
 
     # Model
     model = TransformerModel(
-        input_size=X.shape[1],
+        input_size=len(feature_cols),
         d_model=params["d_model"],
         nhead=params["nhead"],
         num_layers=params["num_layers"],
@@ -786,13 +845,37 @@ def train_transformer(params: Dict[str, Any]):
         dropout=params["dropout"],
     ).to(device)
 
-    criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(1.5))  # slight class imbalance help
+    pos_count = float(train_targets.sum())
+    neg_count = float(len(train_targets) - pos_count)
+    pos_weight = torch.tensor(max(neg_count / pos_count, 1.0) if pos_count > 0 else 1.0, device=device)
+
+    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)  # handle class imbalance
     optimizer = torch.optim.AdamW(model.parameters(), lr=params["learning_rate"], weight_decay=1e-5)
-    scaler_amp = torch.amp.GradScaler('cuda') if device.type == 'cuda' else None
+    scaler_amp = torch.cuda.amp.GradScaler(enabled=device.type == 'cuda')
 
     best_val_auc = 0.0
     patience = 12
     patience_counter = 0
+
+    def _persist_transformer_artifacts(state_dict: Dict[str, torch.Tensor], scaler_obj: StandardScaler):
+        saved_any = False
+        for directory in _model_directories():
+            try:
+                directory.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                logger.warning("Unable to create model directory %s: %s", directory, exc)
+                continue
+
+            weights_path = directory / f"updated_transformer_{ticker.lower()}.pt"
+            scaler_path = directory / f"transformer_scaler_{ticker.lower()}.joblib"
+            torch.save(state_dict, weights_path)
+            joblib.dump(scaler_obj, scaler_path)
+            logger.info("Saved transformer weights → %s", weights_path)
+            logger.info("Saved transformer scaler → %s", scaler_path)
+            saved_any = True
+
+        if not saved_any:
+            logger.error("Failed to persist transformer artifacts to any model directory")
 
     for epoch in range(params.get("epochs", 120)):
         model.train()
@@ -801,18 +884,13 @@ def train_transformer(params: Dict[str, Any]):
             xb, yb = xb.to(device), yb.to(device)
             optimizer.zero_grad()
 
-            if device.type == 'cuda' and scaler_amp:
-                with torch.amp.autocast('cuda'):
-                    logits = model(xb)
-                    loss = criterion(logits, yb)
-                scaler_amp.scale(loss).backward()
-                scaler_amp.step(optimizer)
-                scaler_amp.update()
-            else:
+            with torch.cuda.amp.autocast(enabled=scaler_amp.is_enabled()):
                 logits = model(xb)
                 loss = criterion(logits, yb)
-                loss.backward()
-                optimizer.step()
+
+            scaler_amp.scale(loss).backward()
+            scaler_amp.step(optimizer)
+            scaler_amp.update()
 
             train_losses.append(loss.item())
 
@@ -827,15 +905,20 @@ def train_transformer(params: Dict[str, Any]):
                 val_preds.extend(probs.cpu().numpy())
                 val_true.extend(yb.numpy())
 
-        val_auc = roc_auc_score(val_true, val_preds)
+        try:
+            val_auc = roc_auc_score(val_true, val_preds)
+        except ValueError:
+            val_auc = float("nan")
+            logger.warning("Validation AUC undefined (only one class present in validation set)")
+
         logger.info(f"Epoch {epoch+1:3d} | Train Loss: {np.mean(train_losses):.4f} | Val AUC: {val_auc:.4f}")
 
         # Early stopping + save best
-        if val_auc > best_val_auc:
+        if not np.isnan(val_auc) and val_auc > best_val_auc:
             best_val_auc = val_auc
             patience_counter = 0
-            torch.save(model.state_dict(), MODEL_DIR / "updated_transformer.pt")
-            logger.info("  → New best model saved")
+            _persist_transformer_artifacts(model.state_dict(), scaler)
+            logger.info("  → New best model saved for %s", ticker)
         else:
             patience_counter += 1
             if patience_counter >= patience:
@@ -843,9 +926,8 @@ def train_transformer(params: Dict[str, Any]):
                 break
 
     # Final save + scaler
-    torch.save(model.state_dict(), MODEL_DIR / "updated_transformer.pt")
-    joblib.dump(scaler, MODEL_DIR / "transformer_scaler.joblib")
-    logger.info("Final Transformer saved → updated_transformer.pt")
+    _persist_transformer_artifacts(model.state_dict(), scaler)
+    logger.info("Final Transformer saved → updated_transformer_%s.pt", ticker.lower())
 
     # Log result
     metrics = {"Final Val AUC": float(best_val_auc)}

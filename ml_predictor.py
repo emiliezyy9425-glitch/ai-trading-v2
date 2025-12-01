@@ -352,13 +352,16 @@ def ultimate_decision(preds, ppo_meta=None):
     # Tier 1: Triple Tree Nuclear (second highest)
     tree_models = ["RandomForest", "XGBoost", "LightGBM"]
     if all(m in vote for m in tree_models):
+        tree_votes = [vote[m] for m in tree_models]
+        tree_consensus = len(set(tree_votes)) == 1
+
         if (
             rf_conf >= 0.78
             and conf.get("XGBoost", 0) >= OPTIMAL_CONF["xgb"]
             and conf.get("LightGBM", 0) >= OPTIMAL_CONF["lgb"]
-            and len(set(vote[m] for m in tree_models)) == 1
+            and tree_consensus
         ):
-            return "EXECUTE", rf_vote, "TRIPLE_TREE_NUCLEAR"
+            return "EXECUTE", tree_votes[0], "TRIPLE_TREE_NUCLEAR"
 
     # Tier 2: RandomForest Solo (daily bread)
     if rf_conf >= OPTIMAL_CONF["rf"]:

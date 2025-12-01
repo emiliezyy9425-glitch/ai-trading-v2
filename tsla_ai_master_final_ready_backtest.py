@@ -113,6 +113,16 @@ REQUIRED_FEATURE_COLUMNS: tuple[str, ...] = (
     "zig_4h",
 )
 
+# ==================== 向下兼容：新版 ml_predictor 已移除这个常量 ====================
+FEATURE_ALIASES = {
+    "bb_position_1h.1": "bb_position_1h",
+    "price_z_120h.1": "price_z_120h",
+    "ret_1h.1": "ret_1h",
+    "ret_4h.1": "ret_4h",
+    "ret_24h.1": "ret_24h",
+}
+# ==============================================================================
+
 
 @dataclass
 class Position:

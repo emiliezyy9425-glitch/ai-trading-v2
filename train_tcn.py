@@ -43,7 +43,7 @@ class TemporalBlock(nn.Module):
         return out + residual
 
 class TCN(nn.Module):
-    def __init__(self, n_features=77, channels=[64]*8, kernel_size=3, dropout=0.2):
+    def __init__(self, n_features, channels=[64]*8, kernel_size=3, dropout=0.2):
         super().__init__()
         layers = []
         for i in range(len(channels)):
@@ -94,7 +94,9 @@ def train_tcn(ticker="TQQQ", epochs=60):
     val_loader = DataLoader(val_set, batch_size=512)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = TCN().to(device)
+    n_features = len(train_set.features)
+    logger.info(f"检测到 {n_features} 个特征，自动构建 TCN...")
+    model = TCN(n_features=n_features).to(device)
     criterion = nn.BCELoss()
     optimizer = optim.AdamW(model.parameters(), lr=0.001, weight_decay=1e-5)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)

@@ -20,6 +20,7 @@ import numpy as np
 import tsla_ai_master_final_ready as live_trading
 from tsla_ai_master_final_ready import build_feature_row, is_us_equity_session_open
 from ml_predictor import (
+    FEATURE_ALIASES,
     predict_with_all_models,
     independent_model_decisions,
 )
@@ -112,17 +113,6 @@ REQUIRED_FEATURE_COLUMNS: tuple[str, ...] = (
     "zig_1h",
     "zig_4h",
 )
-
-# ==================== 向下兼容：新版 ml_predictor 已移除这个常量 ====================
-FEATURE_ALIASES = {
-    "bb_position_1h.1": "bb_position_1h",
-    "price_z_120h.1": "price_z_120h",
-    "ret_1h.1": "ret_1h",
-    "ret_4h.1": "ret_4h",
-    "ret_24h.1": "ret_24h",
-}
-# ==============================================================================
-
 
 @dataclass
 class Position:
@@ -499,8 +489,12 @@ def run_backtest(
             end=now, periods=len(sequence_df), freq=_timeframe_delta(timeframe)
         )
 
-        predictions = predict_with_all_models(sequence_df, seq_len=FEATURE_SEQUENCE_WINDOW)
-        decision, detail = independent_model_decisions(predictions, return_details=True)
+        preds, ppo_meta = predict_with_all_models(
+            sequence_df, seq_len=FEATURE_SEQUENCE_WINDOW
+        )
+        decision, detail = independent_model_decisions(
+            (preds, ppo_meta), return_details=True
+        )
         print(
             f"DEBUG: {now} → {decision} | {detail.get('reason', 'no reason')}"
         )
@@ -513,7 +507,7 @@ def run_backtest(
         trade_size = position.size if position is not None else 0
         decision = decision.upper()
 
-        if detail.get("reason", "").startswith("≥3 qualified + nuclear confirmed"):
+        if detail.get("decision_state") == "EXECUTE":
             signal_triggered = True
             expected_direction = 1 if decision == "BUY" else -1
 

@@ -494,6 +494,11 @@ def run_backtest(
             sequence_df, seq_len=FEATURE_SEQUENCE_WINDOW
         )
 
+        # Extract individual model predictions
+        tcn_prob = preds.get("TCN", [0.5])[-1] if "TCN" in preds else 0.5
+        tcn_default_conf = tcn_prob if tcn_prob > 0.5 else 1 - tcn_prob
+        tcn_default_vote = "Buy" if tcn_prob > 0.5 else "Sell"
+
         # === 100% IDENTICAL TO LIVE TRADING DECISION PATH ===
         try:
             # This is EXACTLY what live trading does
@@ -603,8 +608,8 @@ def run_backtest(
         lgb_c = confs.get("LightGBM", confs.get("lgb", 0.0))
         lstm_v = votes.get("LSTM", votes.get("lstm", "Hold"))
         lstm_c = confs.get("LSTM", confs.get("lstm", 0.0))
-        tcn_v = votes.get("TCN", votes.get("tcn", "Hold"))
-        tcn_c = confs.get("TCN", confs.get("tcn", 0.0))
+        tcn_v = votes.get("TCN", votes.get("tcn", tcn_default_vote))
+        tcn_c = confs.get("TCN", confs.get("tcn", tcn_default_conf))
         ppo_v = "Aggressive" if detail.get("ppo_action") == 2 else "Reduce" if detail.get("ppo_action") == 0 else "Hold"
         ppo_c = detail.get("ppo_value", 0.0)
         trans_v = votes.get("Transformer", votes.get("transformer", "Hold"))

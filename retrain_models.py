@@ -479,7 +479,7 @@ def train_lstm(params: Dict[str, Any]):
             seq_len=params.get("time_steps", X_train_lstm.shape[1])
         ).to(device)
 
-        criterion = nn.BCELoss()
+        criterion = nn.BCEWithLogitsLoss()
         optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
         train_dataset = TensorDataset(torch.tensor(X_train_lstm, dtype=torch.float32), torch.tensor(y_train.values, dtype=torch.float32).unsqueeze(1))
@@ -787,7 +787,7 @@ def train_transformer(params: Dict[str, Any]):
             max_seq_len=seq_len,
         ).to(device)
 
-        criterion = nn.BCELoss()
+        criterion = nn.BCEWithLogitsLoss()
         optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
         use_amp = device.type == "cuda"
         scaler_amp = torch.amp.GradScaler("cuda") if use_amp else None
@@ -814,22 +814,22 @@ def train_transformer(params: Dict[str, Any]):
                 optimizer.zero_grad()
                 if use_amp:
                     with torch.amp.autocast("cuda"):
-                        probs = model(xb)
-                        loss = criterion(probs, yb)
+                        logits = model(xb)
+                        loss = criterion(logits, yb)
                     scaler_amp.scale(loss).backward()
                     scaler_amp.step(optimizer)
                     scaler_amp.update()
                 else:
-                    probs = model(xb)
-                    loss = criterion(probs, yb)
+                    logits = model(xb)
+                    loss = criterion(logits, yb)
                     loss.backward()
                     optimizer.step()
 
             # ---- validation ------------------------------------------------
             model.eval()
             with torch.no_grad():
-                preds = model(torch.from_numpy(X_val_seq).to(device))
-                preds = preds.cpu().numpy().flatten()
+                logits = model(torch.from_numpy(X_val_seq).to(device))
+                preds = torch.sigmoid(logits).cpu().numpy().flatten()
             try:
                 auc = roc_auc_score(y_val_seq, preds)
             except Exception:
@@ -886,6 +886,7 @@ def train_transformer(params: Dict[str, Any]):
     ).to(device)
 
     optimizer = optim.AdamW(final_model.parameters(), lr=params["learning_rate"], weight_decay=0.01)
+    criterion = nn.BCEWithLogitsLoss()
     use_amp = device.type == "cuda"
     scaler_amp = torch.amp.GradScaler("cuda") if use_amp else None
 
@@ -903,14 +904,14 @@ def train_transformer(params: Dict[str, Any]):
             optimizer.zero_grad()
             if use_amp:
                 with torch.amp.autocast("cuda"):
-                    probs = final_model(xb)
-                    loss = nn.BCELoss()(probs, yb)
+                    logits = final_model(xb)
+                    loss = criterion(logits, yb)
                 scaler_amp.scale(loss).backward()
                 scaler_amp.step(optimizer)
                 scaler_amp.update()
             else:
-                probs = final_model(xb)
-                loss = nn.BCELoss()(probs, yb)
+                logits = final_model(xb)
+                loss = criterion(logits, yb)
                 loss.backward()
                 optimizer.step()
 
@@ -919,7 +920,8 @@ def train_transformer(params: Dict[str, Any]):
     # ------------------------------------------------------------------
     final_model.eval()
     with torch.no_grad():
-        test_probs = final_model(torch.from_numpy(X_test_seq).to(device)).cpu().numpy().flatten()
+        test_logits = final_model(torch.from_numpy(X_test_seq).to(device))
+        test_probs = torch.sigmoid(test_logits).cpu().numpy().flatten()
 
     test_auc = roc_auc_score(y_test_seq, test_probs)
     test_acc = accuracy_score(y_test_seq, (test_probs > 0.5).astype(int))

@@ -55,8 +55,7 @@ class TransformerModel(nn.Module):
             nn.Linear(d_model, d_model // 2),
             nn.GELU(),
             nn.Dropout(0.1),
-            nn.Linear(d_model // 2, 1),
-            nn.Sigmoid()
+            nn.Linear(d_model // 2, 1)
         )
 
         self._init_weights()
@@ -73,5 +72,5 @@ class TransformerModel(nn.Module):
         x = self.transformer(x)
         x = x[:, -1, :]  # Take last timestep
         x = self.dropout(x)
-        prob = self.classifier(x)
-        return prob.squeeze(-1)  # (batch_size,)
+        logits = self.classifier(x)
+        return logits.squeeze(-1)  # (batch_size,)

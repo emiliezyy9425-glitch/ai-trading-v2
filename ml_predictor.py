@@ -182,10 +182,10 @@ def independent_model_decisions(preds, return_details=False):
         p = float(prob[-1])
         conf = p if p > 0.5 else 1-p
         thresh = {
-            "rf": 0.80,      # 降低一点，更容易通过
-            "xgb": 0.92,     # 从 0.945 → 0.92
+            "rf": 0.80,
+            "xgb": 0.91,
             "lgb": 0.80,
-            "lstm": 0.88,    # 关键！从 0.99 降到 0.88（实测最稳）
+            "lstm": 0.88,        # 关键！0.88 是当前 LSTM 的最佳触发点
             "transformer": 0.90,
         }.get(name.lower()[:3], 0.9)
 
@@ -199,7 +199,7 @@ def independent_model_decisions(preds, return_details=False):
         return "Hold" if not return_details else ("Hold", {"reason": "less than 3 qualified"})
 
     nuclear = any(
-        (n == "xgb" and c >= 0.91) or 
+        (n == "xgb" and c >= 0.90) or
         (n == "lstm" and c >= 0.87) or
         (n == "transformer" and c >= 0.89)
         for n, _, c in q

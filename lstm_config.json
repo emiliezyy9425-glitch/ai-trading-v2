@@ -1,20 +1,14 @@
 {
   "data_path": "data/historical_data_no_price.csv",
-  "target_column": "decision",
-  "time_steps": 60,
-  "epochs": 80,
+  "time_steps": 120,
+  "epochs": 100,
   "batch_size": 128,
-  "learning_rate": 0.00005,
-  "hidden_size": 64,
-  "num_layers": 2,
-  "dropout_rate": 0.35,
+  "learning_rate": 0.00008,
+  "hidden_size": 384,
+  "num_layers": 4,
+  "dropout_rate": 0.4,
   "weight_decay": 1e-5,
   "gradient_clip": 1.0,
-  "n_trials": 25,
-  "max_training_minutes": 45,
-  "early_stopping_patience": 12,
-  "target_val_auc": 0.82,
-  "use_class_weights": true,
-  "val_split": 0.15,
-  "test_split": 0.15
+  "n_trials": 30,
+  "early_stopping_patience": 15
 }

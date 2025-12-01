@@ -1,10 +1,13 @@
 # ml_predictor.py —— 2025-12-01 终极无敌版（已适配你所有真实模型）
 import os, logging, numpy as np, pandas as pd, torch
+import torch.nn as nn
 from pathlib import Path
 from joblib import load
 from stable_baselines3 import PPO
 from self_learn import FEATURE_NAMES
 from sequence_utils import pad_sequence_to_length
+
+logger = logging.getLogger(__name__)
 
 MODEL_DIR = Path("/app/models")
 
@@ -23,6 +26,92 @@ def _find(*names):
             if matches:
                 return sorted(matches, key=lambda x: x.stat().st_mtime, reverse=True)[0]
     return None
+
+# ==================== TCN MODEL (ADDED — DOES NOT REPLACE ANYTHING) ====================
+class TemporalBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size, dilation, dropout=0.2):
+        super().__init__()
+        padding = (kernel_size - 1) * dilation
+        self.conv1 = nn.Conv1d(in_channels, out_channels, kernel_size, padding=padding, dilation=dilation)
+        self.chomp = nn.utils.weight_norm(nn.Conv1d(out_channels, out_channels, 1))
+        self.relu = nn.ReLU()
+        self.dropout = nn.Dropout(dropout)
+        self.norm = nn.BatchNorm1d(out_channels)
+        self.downsample = nn.Conv1d(in_channels, out_channels, 1) if in_channels != out_channels else None
+        self.init_weights()
+
+    def init_weights(self):
+        nn.init.xavier_uniform_(self.conv1.weight)
+        if self.downsample:
+            nn.init.xavier_uniform_(self.downsample.weight)
+
+    def forward(self, x):
+        residual = x
+        out = self.conv1(x)
+        out = out[:, :, :-self.conv1.padding[0]]
+        gate = torch.sigmoid(self.chomp(out))
+        out = self.relu(out) * gate
+        out = self.norm(self.dropout(out))
+        if self.downsample:
+            residual = self.downsample(residual)
+        return out + residual
+
+
+class TCN(nn.Module):
+    def __init__(self, n_features=77, channels=[64] * 8, kernel_size=3, dropout=0.2):
+        super().__init__()
+        layers = []
+        for i in range(len(channels)):
+            dilation = 2 ** i
+            in_ch = n_features if i == 0 else channels[i - 1]
+            out_ch = channels[i]
+            layers.append(TemporalBlock(in_ch, out_ch, kernel_size, dilation, dropout))
+        self.network = nn.Sequential(*layers)
+        self.classifier = nn.Linear(channels[-1], 1)
+
+    def forward(self, x):
+        x = x.transpose(1, 2)
+        y = self.network(x)
+        y = y[:, :, -1]
+        return torch.sigmoid(self.classifier(y)).squeeze(-1)
+
+
+# ==================== TCN PREDICTION FUNCTION (NEW) ====================
+def predict_tcn(df: pd.DataFrame, seq_len: int = 60):
+    ticker = "UNKNOWN"
+    if "ticker" in df.columns and len(df) > 0:
+        ticker = str(df["ticker"].iloc[-1]).upper()
+
+    path = _find(
+        f"tcn_best_{ticker.lower()}.pt",
+        f"tcn_best_{ticker.split('.')[0].lower()}.pt",
+        "tcn_best.pt",
+    )
+    if not path:
+        return np.array([]), np.array([])
+
+    try:
+        model = TCN(n_features=len(FEATURE_NAMES))
+        state_dict = torch.load(path, map_location="cpu")
+        model.load_state_dict(state_dict)
+        model.eval()
+        logger.info(f"TCN loaded: {path.name}")
+    except Exception as e:
+        logger.warning(f"TCN load failed ({ticker}): {e}")
+        return np.array([]), np.array([])
+
+    seq = pad_sequence_to_length(df[FEATURE_NAMES].fillna(0), seq_len)
+    if len(seq) < seq_len:
+        return np.array([]), np.array([])
+
+    X = torch.tensor(seq, dtype=torch.float32).unsqueeze(0)
+    with torch.no_grad():
+        prob = model(X).item()
+
+    vote = 1 if prob > 0.5 else 0
+    conf = prob if prob > 0.5 else 1 - prob
+    logger.info(f"TCN → {ticker} | prob={prob:.4f} | conf={conf:.4f}")
+    return np.array([prob]), np.array([vote])
 
 # ================== 兼容你的真实模型架构 ==================
 def predict_lstm(df: pd.DataFrame, seq_len: int = 60):
@@ -160,6 +249,13 @@ def predict_with_all_models(sequence_df: pd.DataFrame, seq_len: int = 60):
         logging.info(f"Transformer predicted → prob={trans_prob[0]:.4f}")
     except Exception as e:
         logging.error(f"Transformer failed: {e}")
+
+    try:
+        tcn_prob, tcn_pred = predict_tcn(df, seq_len)
+        preds["TCN"] = (tcn_prob, tcn_pred)
+        logging.info(f"TCN predicted → prob={tcn_prob[0]:.4f}")
+    except Exception as e:
+        logging.error(f"TCN failed: {e}")
 
     try:
         ppo_prob, ppo_act, ppo_meta = predict_ppo(df, seq_len)

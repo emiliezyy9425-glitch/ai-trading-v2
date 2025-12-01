@@ -206,9 +206,10 @@ def independent_model_decisions(preds, return_details=False):
     conf_detail["PPO"] = float(ppo_meta.get("action_conf", ppo_meta.get("conf", [0.6]))[0])
 
     if len(q) < 3:
-        reason = "less than 3 qualified"
         decision = "Hold"
+        reason = "less than 3 qualified"
     else:
+        # 核确认
         nuclear = any(
             (n == "xgb" and c >= 0.90) or
             (n == "lstm" and c >= 0.87) or
@@ -216,11 +217,18 @@ def independent_model_decisions(preds, return_details=False):
             for n, _, c in q
         )
         if not nuclear:
-            reason = "no nuclear"
             decision = "Hold"
+            reason = "no nuclear"
         else:
-            reason = "NUCLEAR BUY!"
-            decision = "Buy"
+            # 关键：根据多数票决定 Buy 还是 Sell
+            buy_votes = sum(1 for _, vote, _ in q if vote == "Buy")
+            sell_votes = len(q) - buy_votes
+            if buy_votes > sell_votes:
+                decision = "Buy"
+                reason = "NUCLEAR BUY!"
+            else:
+                decision = "Sell"
+                reason = "NUCLEAR SELL!"
 
     if not return_details:
         return decision
@@ -233,4 +241,6 @@ def independent_model_decisions(preds, return_details=False):
         "confidences": conf_detail,
         "ppo_action": ppo_meta.get("action", 1),
         "ppo_entropy": ppo_meta.get("entropy", 0.5),
+        "nuclear_buy_votes": sum(1 for _, v, _ in q if v == "Buy"),
+        "nuclear_sell_votes": sum(1 for _, v, _ in q if v == "Sell"),
     }

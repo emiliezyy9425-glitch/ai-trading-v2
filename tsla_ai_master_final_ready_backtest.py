@@ -491,6 +491,10 @@ def run_backtest(
         )
 
         predictions = predict_with_all_models(sequence_df, seq_len=FEATURE_SEQUENCE_WINDOW)
+        decision, detail = independent_model_decisions(predictions, return_details=True)
+        print(
+            f"DEBUG: {now} → {decision} | {detail.get('reason', 'no reason')}"
+        )
 
         # === CORRECTED POSITION MANAGEMENT (paste this exactly) ===
         signal_triggered = False
@@ -498,8 +502,6 @@ def run_backtest(
         pnl_points = 0.0
         result = "HOLD"
         trade_size = position.size if position is not None else 0
-
-        decision, detail = independent_model_decisions(predictions, return_details=True)
         decision = decision.upper()
 
         if detail.get("reason", "").startswith("≥3 qualified + nuclear confirmed"):

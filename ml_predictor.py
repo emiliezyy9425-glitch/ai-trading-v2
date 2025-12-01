@@ -109,22 +109,45 @@ def predict_with_all_models(sequence_df: pd.DataFrame, seq_len: int = 60):
             scaler = load(scaler_path)
             X = scaler.transform(sequence_df[FEATURE_NAMES])
             df = pd.DataFrame(X, columns=FEATURE_NAMES, index=sequence_df.index)
-        except: pass
+        except Exception as e:
+            logging.warning(f"Scaler failed: {e}")
 
     preds = {}
-    try: preds["RandomForest"] = predict_rf(df)
-    except: pass
-    try: preds["XGBoost"] = predict_xgb(df)
-    except: pass
-    try: preds["LightGBM"] = predict_lgb(df)
-    except: pass
-    try: preds["LSTM"] = predict_lstm(df, seq_len)
-    except: pass
-    try: preds["Transformer"] = predict_transformer(df, seq_len)
-    except: pass
+    try:
+        preds["RandomForest"] = predict_rf(df)
+        logging.info("RF predicted")
+    except Exception as e:
+        logging.error(f"RF failed: {e}")
+    try:
+        preds["XGBoost"] = predict_xgb(df)
+        logging.info("XGB predicted")
+    except Exception as e:
+        logging.error(f"XGB failed: {e}")
+    try:
+        preds["LightGBM"] = predict_lgb(df)
+        logging.info("LGB predicted")
+    except Exception as e:
+        logging.error(f"LGB failed: {e}")
+    try:
+        preds["LSTM"], _ = predict_lstm(df, seq_len)
+        logging.info("LSTM predicted")
+    except Exception as e:
+        logging.error(f"LSTM failed: {e}")
+    try:
+        preds["Transformer"], _ = predict_transformer(df, seq_len)
+        logging.info("Transformer predicted")
+    except Exception as e:
+        logging.error(f"Transformer failed: {e}")
 
-    ppo_prob, ppo_act, ppo_meta = predict_ppo(df, seq_len)
-    preds["PPO"] = (ppo_prob, ppo_act)
+    try:
+        ppo_prob, ppo_act, ppo_meta = predict_ppo(df, seq_len)
+        preds["PPO"] = (ppo_prob, ppo_act)
+        logging.info(
+            f"PPO predicted | action={ppo_meta.get('action', 1)} entropy={ppo_meta.get('entropy', 0.5):.3f}"
+        )
+    except Exception as e:
+        logging.error(f"PPO failed: {e}")
+        ppo_meta = {}
 
     return preds, ppo_meta
 

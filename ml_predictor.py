@@ -141,13 +141,15 @@ def predict_with_all_models(sequence_df: pd.DataFrame, seq_len: int = 60):
     except Exception as e:
         logging.error(f"LGB failed: {e}")
     try:
-        preds["LSTM"], _ = predict_lstm(df, seq_len)
-        logging.info("LSTM predicted")
+        lstm_prob, lstm_pred = predict_lstm(df, seq_len)
+        preds["LSTM"] = (lstm_prob, lstm_pred)
+        logging.info(f"LSTM predicted → prob={lstm_prob[0]:.4f}")
     except Exception as e:
         logging.error(f"LSTM failed: {e}")
     try:
-        preds["Transformer"], _ = predict_transformer(df, seq_len)
-        logging.info("Transformer predicted")
+        trans_prob, trans_pred = predict_transformer(df, seq_len)
+        preds["Transformer"] = (trans_prob, trans_pred)
+        logging.info(f"Transformer predicted → prob={trans_prob[0]:.4f}")
     except Exception as e:
         logging.error(f"Transformer failed: {e}")
 

@@ -132,19 +132,48 @@ def predict_ppo(df: pd.DataFrame, seq_len: int = 60) -> Tuple[np.ndarray, np.nda
     if len(seq) < seq_len:
         return np.array([]), np.array([]), {}
 
-    obs = seq.values.astype(np.float32)
-    action, _ = model.predict(obs, deterministic=True)
+    obs = seq.values.astype(np.float32)  # shape: (seq_len, n_features)
+
+    actions: list[int] = []
+    values: list[float] = []
+    entropies: list[float] = []
+
     with torch.no_grad():
-        value = model.policy.predict_values(torch.tensor(obs)).numpy()
-        metadata = {
-            "action": int(action[-1]),
-            "value": float(value.mean()),
-            "entropy": 0.3,
-            "value_ma100": float(value.mean()),
-            "value_std100": 0.5,
-        }
-    prob = 0.99 if action[-1] == 2 else 0.6 if action[-1] == 1 else 0.3
-    return np.array([prob]), np.array([action[-1]]), metadata
+        for i in range(len(obs)):
+            single_obs = torch.tensor(obs[i : i + 1], dtype=torch.float32)
+            action, _states = model.predict(single_obs, deterministic=False)
+            actions.append(int(action[0]))
+
+            value = model.policy.predict_values(single_obs).cpu().numpy()[0]
+            values.append(float(value))
+
+            dist = model.policy.get_distribution(single_obs)
+            entropy = dist.entropy().cpu().numpy()[0]
+            entropies.append(float(entropy))
+
+    recent_values = np.array(values[-10:])
+    recent_entropy = np.array(entropies[-10:])
+
+    metadata = {
+        "action": int(actions[-1]),
+        "value": float(values[-1]),
+        "entropy": float(recent_entropy.mean()),
+        "value_ma100": float(recent_values.mean()),
+        "value_std100": float(recent_values.std()) if len(recent_values) > 1 else 0.5,
+        "entropy_raw_last": float(entropies[-1]),
+        "confidence_score": float(1.0 / (1.0 + recent_entropy.mean())),
+    }
+
+    base_conf = 0.60
+    if metadata["action"] == 2:
+        base_conf = 0.92
+    elif metadata["action"] == 0:
+        base_conf = 0.45
+
+    entropy_bonus = max(0.0, 0.3 - metadata["entropy"]) * 2.0
+    final_conf = min(0.999, base_conf + entropy_bonus)
+
+    return np.array([final_conf]), np.array([metadata["action"]]), metadata
 
 
 def predict_rf(df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:

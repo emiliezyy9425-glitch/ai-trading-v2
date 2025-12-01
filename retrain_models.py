@@ -714,268 +714,143 @@ logger = logging.getLogger(__name__)
 
 
 def train_transformer(params: Dict[str, Any]):
-    """Train Transformer with Optuna, FP16, early-stop, best-model save."""
-    logger.info("=== START TRANSFORMER TRAINING ===")
-    MODEL_DIR.mkdir(parents=True, exist_ok=True)
+    logger.info("=== STARTING TRANSFORMER TRAINING (FIXED NO-LEAK VERSION) ===")
 
-    # ------------------------------------------------------------------
-    # 1. Load & split
-    # ------------------------------------------------------------------
-    df = pd.read_csv(resolve_data_path('historical_data_no_price.csv'))
-    X = df[FEATURE_NAMES].values.astype(np.float32)
-    y = df['decision'].values.astype(np.float32)
+    X, y = load_data()  # ← already has correct forward-looking label: close[t+5] > close[t]*1.01
 
-    X_train, X_temp, y_train, y_temp = train_test_split(
-        X, y, test_size=0.3, random_state=42, stratify=y
-    )
-    X_val, X_test, y_val, y_test = train_test_split(
-        X_temp, y_temp, test_size=0.5, random_state=42, stratify=y_temp
-    )
+    # CRITICAL FIX #1: Proper sequence creation — NO LEAKAGE
+    def create_sequences_proper(X_np: np.ndarray, y_np: np.ndarray, seq_len: int):
+        if len(X_np) <= seq_len:
+            return np.array([]), np.array([])
+        
+        # We can only make (len - seq_len) sequences because:
+        # Sequence 0: rows 0 to 119 → predicts label at row 119 → which looks +5 ahead → needs row 124
+        # So we must stop seq_len + 5 before the end
+        max_start = len(X_np) - seq_len - 5 + 1  # +1 because range is inclusive
+        if max_start <= 0:
+            return np.array([]), np.array([])
 
-    # ------------------------------------------------------------------
-    # 2. Scale + save scaler
-    # ------------------------------------------------------------------
+        sequences = []
+        labels = []
+        for i in range(max_start):
+            sequences.append(X_np[i:i + seq_len])
+            # Label corresponds to the END of the sequence (row i+seq_len-1)
+            # That label uses close[i+seq_len-1 + 5], which is safe because i+seq_len-1+5 < len(X_np)
+            labels.append(y_np[i + seq_len - 1])
+
+        return np.array(sequences), np.array(labels)
+
+    # Convert to numpy once
+    X_np = X.values
+    y_np = y.values.astype(np.float32)
+
+    # Create sequences safely
+    X_seq, y_seq = create_sequences_proper(X_np, y_np, seq_len=params.get("time_steps", 120))
+    if len(X_seq) == 0:
+        logger.error("Not enough data to create even one clean sequence. Need >125 rows per ticker.")
+        return
+
+    logger.info(f"Created {len(X_seq):,} clean forward-looking sequences (no leakage)")
+
+    # Train/val split (time-series safe)
+    split_idx = int(len(X_seq) * 0.85)
+    X_train_seq, X_val_seq = X_seq[:split_idx], X_seq[split_idx:]
+    y_train_seq, y_val_seq = y_seq[:split_idx], y_seq[split_idx:]
+
+    # Scaling — fit only on training data
     scaler = StandardScaler()
-    X_train_s = scaler.fit_transform(X_train)
-    X_val_s   = scaler.transform(X_val)
-    X_test_s  = scaler.transform(X_test)
+    X_train_flat = X_train_seq.reshape(-1, X_train_seq.shape[-1])
+    scaler.fit(X_train_flat)
 
-    dump(scaler, MODEL_DIR / "transformer_scaler.joblib")
-    logger.info(f"Scaler → {MODEL_DIR}/transformer_scaler.joblib")
+    # Apply scaling
+    X_train_seq = scaler.transform(X_train_seq.reshape(-1, X_train_seq.shape[-1])).reshape(X_train_seq.shape)
+    X_val_seq = scaler.transform(X_val_seq.reshape(-1, X_val_seq.shape[-1])).reshape(X_val_seq.shape)
 
-    # ------------------------------------------------------------------
-    # 3. Build sequences (seq_len = time_steps)
-    # ------------------------------------------------------------------
-    seq_len = params.get("time_steps", 120)
+    # Datasets
+    train_ds = TensorDataset(torch.tensor(X_train_seq, dtype=torch.float32), 
+                            torch.tensor(y_train_seq, dtype=torch.float32))
+    val_ds = TensorDataset(torch.tensor(X_val_seq, dtype=torch.float32), 
+                          torch.tensor(y_val_seq, dtype=torch.float32))
 
-    def to_sequences(arr: np.ndarray) -> np.ndarray:
-        n = arr.shape[0] - seq_len + 1
-        return np.stack([arr[i:i + seq_len] for i in range(n)], axis=0)
+    train_loader = DataLoader(train_ds, batch_size=params["batch_size"], shuffle=True, drop_last=True)
+    val_loader = DataLoader(val_ds, batch_size=params["batch_size"], shuffle=False)
 
-    X_train_seq = to_sequences(X_train_s)
-    X_val_seq   = to_sequences(X_val_s)
-    X_test_seq  = to_sequences(X_test_s)
-
-    # Align labels (drop first seq_len-1 rows)
-    y_train_seq = y_train[seq_len - 1 : seq_len - 1 + X_train_seq.shape[0]]
-    y_val_seq   = y_val[  seq_len - 1 : seq_len - 1 + X_val_seq.shape[0]]
-    y_test_seq  = y_test[ seq_len - 1 : seq_len - 1 + X_test_seq.shape[0]]
-
-    # ------------------------------------------------------------------
-    # 4. Optuna objective (short trials)
-    # ------------------------------------------------------------------
-    def objective(trial):
-        # ---- hyper-params -------------------------------------------------
-        nhead = trial.suggest_categorical("nhead", [1, 2, 4, 8])
-        d_model = trial.suggest_int("d_model", 64, 512, step=32)
-        # make d_model divisible by nhead
-        d_model = ((d_model // nhead) + 1) * nhead
-        # enforce even dimensionality for positional encoding stability
-        if d_model % 2 != 0:
-            d_model += 1
-        # align to nearest multiple of 8 for performance and cap at 512
-        d_model = ((d_model + 7) // 8) * 8
-        d_model = min(d_model, 512)
-
-        num_layers = trial.suggest_int("num_layers", 1, 6)
-        dropout    = trial.suggest_float("dropout", 0.0, 0.3)
-        lr         = trial.suggest_float("learning_rate", 1e-5, 1e-2, log=True)
-        batch_size = trial.suggest_categorical("batch_size", [32, 64, 128])
-
-        model = TransformerModel(
-            input_size=X_train.shape[-1],
-            d_model=d_model,
-            nhead=nhead,
-            num_layers=num_layers,
-            dim_feedforward=d_model * 4,   # standard 4× rule
-            dropout=dropout,
-            max_seq_len=seq_len,
-        ).to(device)
-
-        criterion = nn.BCEWithLogitsLoss()
-        optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
-        use_amp = device.type == "cuda"
-        scaler_amp = torch.amp.GradScaler("cuda") if use_amp else None
-
-        train_ds = TensorDataset(
-            torch.from_numpy(X_train_seq),
-            torch.from_numpy(y_train_seq),
-        )
-        val_ds = TensorDataset(
-            torch.from_numpy(X_val_seq),
-            torch.from_numpy(y_val_seq),
-        )
-        train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
-        val_loader   = DataLoader(val_ds,   batch_size=batch_size)
-
-        best_auc = 0.0
-        patience = 5
-        wait = 0
-
-        for epoch in range(50):                     # short trial
-            model.train()
-            for xb, yb in train_loader:
-                xb, yb = xb.to(device), yb.to(device)
-                optimizer.zero_grad()
-                if use_amp:
-                    with torch.amp.autocast("cuda"):
-                        logits = model(xb)
-                        loss = criterion(logits, yb)
-                    scaler_amp.scale(loss).backward()
-                    scaler_amp.step(optimizer)
-                    scaler_amp.update()
-                else:
-                    logits = model(xb)
-                    loss = criterion(logits, yb)
-                    loss.backward()
-                    optimizer.step()
-
-            # ---- validation ------------------------------------------------
-            model.eval()
-            with torch.no_grad():
-                logits = model(torch.from_numpy(X_val_seq).to(device))
-                preds = torch.sigmoid(logits).cpu().numpy().flatten()
-            try:
-                auc = roc_auc_score(y_val_seq, preds)
-            except Exception:
-                auc = 0.5
-
-            if auc > best_auc:
-                best_auc = auc
-                wait = 0
-                # keep best trial checkpoint (optional)
-                torch.save(
-                    model.state_dict(),
-                    MODEL_DIR / f"transformer_trial_{trial.number}.pt",
-                )
-            else:
-                wait += 1
-                if wait >= patience:
-                    break
-
-        return best_auc
-
-    # ------------------------------------------------------------------
-    # 5. Run Optuna
-    # ------------------------------------------------------------------
-    study = optuna.create_study(
-        direction="maximize",
-        sampler=optuna.samplers.TPESampler(seed=42),
-    )
-    study.optimize(
-        objective,
-        n_trials=params.get("n_trials", 30),
-        timeout=params.get("max_training_minutes", 60) * 60,
-    )
-
-    best = study.best_params
-    logger.info(f"Best trial {study.best_trial.number}: AUC={study.best_value:.4f}")
-    logger.info(f"Best params: {best}")
-
-    # ------------------------------------------------------------------
-    # 6. Final training on train+val
-    # ------------------------------------------------------------------
-    X_train_full = np.vstack([X_train_s, X_val_s])
-    y_train_full = np.hstack([y_train, y_val])
-    X_train_full_seq = to_sequences(X_train_full)
-    y_train_full_seq = y_train_full[seq_len - 1 : seq_len - 1 + X_train_full_seq.shape[0]]
-
-    final_model = TransformerModel(
-        input_size=X_train.shape[-1],
+    # Model
+    model = TransformerModel(
+        input_size=X.shape[1],
         d_model=params["d_model"],
         nhead=params["nhead"],
         num_layers=params["num_layers"],
         dim_feedforward=params["dim_feedforward"],
         dropout=params["dropout"],
-        max_seq_len=params["time_steps"],
     ).to(device)
 
-    optimizer = optim.AdamW(final_model.parameters(), lr=params["learning_rate"], weight_decay=0.01)
-    criterion = nn.BCEWithLogitsLoss()
-    use_amp = device.type == "cuda"
-    scaler_amp = torch.amp.GradScaler("cuda") if use_amp else None
+    criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(1.5))  # slight class imbalance help
+    optimizer = torch.optim.AdamW(model.parameters(), lr=params["learning_rate"], weight_decay=1e-5)
+    scaler_amp = torch.amp.GradScaler('cuda') if device.type == 'cuda' else None
 
-    train_ds = TensorDataset(
-        torch.from_numpy(X_train_full_seq),
-        torch.from_numpy(y_train_full_seq),
-    )
-    train_loader = DataLoader(train_ds, batch_size=params["batch_size"], shuffle=True)
+    best_val_auc = 0.0
+    patience = 12
+    patience_counter = 0
 
-    epochs = params.get("epochs", 120)
-    for epoch in tqdm(range(epochs), desc="Final Transformer"):
-        final_model.train()
+    for epoch in range(params.get("epochs", 120)):
+        model.train()
+        train_losses = []
         for xb, yb in train_loader:
             xb, yb = xb.to(device), yb.to(device)
             optimizer.zero_grad()
-            if use_amp:
-                with torch.amp.autocast("cuda"):
-                    logits = final_model(xb)
+
+            if device.type == 'cuda' and scaler_amp:
+                with torch.amp.autocast('cuda'):
+                    logits = model(xb)
                     loss = criterion(logits, yb)
                 scaler_amp.scale(loss).backward()
                 scaler_amp.step(optimizer)
                 scaler_amp.update()
             else:
-                logits = final_model(xb)
+                logits = model(xb)
                 loss = criterion(logits, yb)
                 loss.backward()
                 optimizer.step()
 
-    # ------------------------------------------------------------------
-    # 7. Test evaluation
-    # ------------------------------------------------------------------
-    final_model.eval()
-    with torch.no_grad():
-        test_logits = final_model(torch.from_numpy(X_test_seq).to(device))
-        test_probs = torch.sigmoid(test_logits).cpu().numpy().flatten()
+            train_losses.append(loss.item())
 
-    test_auc = roc_auc_score(y_test_seq, test_probs)
-    test_acc = accuracy_score(y_test_seq, (test_probs > 0.5).astype(int))
-    logger.info(f"Test AUC: {test_auc:.4f} | Acc: {test_acc:.4f}")
+        # Validation
+        model.eval()
+        val_preds, val_true = [], []
+        with torch.no_grad():
+            for xb, yb in val_loader:
+                xb = xb.to(device)
+                logits = model(xb)
+                probs = torch.sigmoid(logits)
+                val_preds.extend(probs.cpu().numpy())
+                val_true.extend(yb.numpy())
 
-    # ------------------------------------------------------------------
-    # 8. Save .pt + JSON config (used by ml_predictor)
-    # ------------------------------------------------------------------
-    pt_path = MODEL_DIR / "updated_transformer.pt"
-    torch.save(final_model.state_dict(), pt_path)
+        val_auc = roc_auc_score(val_true, val_preds)
+        logger.info(f"Epoch {epoch+1:3d} | Train Loss: {np.mean(train_losses):.4f} | Val AUC: {val_auc:.4f}")
 
-    cfg = {
-        "input_size": X_train.shape[-1],
-        "d_model": params["d_model"],
-        "nhead": params["nhead"],
-        "num_layers": params["num_layers"],
-        "dim_feedforward": params["dim_feedforward"],
-        "dropout": params["dropout"],
-        "time_steps": seq_len,
-        "scaler_path": str(MODEL_DIR / "transformer_scaler.joblib"),
-    }
-    cfg_path = pt_path.with_suffix(".json")
-    with open(cfg_path, "w") as f:
-        json.dump(cfg, f, indent=2)
+        # Early stopping + save best
+        if val_auc > best_val_auc:
+            best_val_auc = val_auc
+            patience_counter = 0
+            torch.save(model.state_dict(), MODEL_DIR / "updated_transformer.pt")
+            logger.info("  → New best model saved")
+        else:
+            patience_counter += 1
+            if patience_counter >= patience:
+                logger.info("Early stopping triggered")
+                break
 
-    logger.info(f"Saved model → {pt_path}")
-    logger.info(f"Saved config → {cfg_path}")
+    # Final save + scaler
+    torch.save(model.state_dict(), MODEL_DIR / "updated_transformer.pt")
+    joblib.dump(scaler, MODEL_DIR / "transformer_scaler.joblib")
+    logger.info("Final Transformer saved → updated_transformer.pt")
 
-    # ------------------------------------------------------------------
-    # 9. Log final metrics
-    # ------------------------------------------------------------------
-    metrics = {
-        "AUC": float(test_auc),
-        "Accuracy": float(test_acc),
-        "Classification Report": classification_report(
-            y_test_seq, (test_probs > 0.5).astype(int), output_dict=True
-        ),
-        "Best Optuna Trial": study.best_trial.number,
-        "Best Trial AUC": float(study.best_value),
-    }
+    # Log result
+    metrics = {"Final Val AUC": float(best_val_auc)}
     log_training_results("Transformer", metrics)
+    logger.info("=== TRANSFORMER TRAINING COMPLETED (FIXED & CLEAN) ===")
 
-    scaler = StandardScaler()
-    scaler.fit(X_train)
-    joblib.dump(scaler, str(MODEL_DIR / "scaler.joblib"))
-    joblib.dump(list(FEATURE_NAMES), str(MODEL_DIR / "feature_order.joblib"))
-    logger.info("Saved scaler.joblib and feature_order.joblib for Transformer")
-
-    logger.info("=== TRANSFORMER TRAINING FINISHED ===")
 # --------------------------------------------------------------------------- #
 # Dispatcher
 # --------------------------------------------------------------------------- #

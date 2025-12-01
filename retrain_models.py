@@ -37,6 +37,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from models.transformer import TransformerModel
+from lstm import AttentiveBiLSTM
 
 
 from pytorch_utils import configure_pytorch
@@ -448,19 +449,6 @@ def train_lightgbm(params: Dict[str, Any]):
 # --------------------------------------------------------------------------- #
 logger = logging.getLogger(__name__)
 
-class LSTMModel(nn.Module):
-    def __init__(self, input_size, hidden_size, num_layers, dropout):
-        super().__init__()
-        self.lstm = nn.LSTM(input_size=input_size, hidden_size=hidden_size, num_layers=num_layers, dropout=dropout, batch_first=True)
-        self.fc = nn.Linear(hidden_size, 1)
-        self.sigmoid = nn.Sigmoid()
-
-    def forward(self, x):
-        output, _ = self.lstm(x)
-        output = self.fc(output[:, -1, :])
-        output = self.sigmoid(output)
-        return output
-
 def train_lstm(params: Dict[str, Any]):
     X_train, y_train, X_val, y_val, X_test, y_test, features, y_val_np, val_returns, scaler = load_and_preprocess_data(
         data_path=params["data_path"],
@@ -483,7 +471,13 @@ def train_lstm(params: Dict[str, Any]):
         learning_rate = trial.suggest_float("learning_rate", 1e-5, 1e-2, log=True)
         batch_size = trial.suggest_categorical("batch_size", [16, 32, 64, 128])
 
-        model = LSTMModel(input_size=len(features), hidden_size=hidden_size, num_layers=num_layers, dropout=dropout).to(device)
+        model = AttentiveBiLSTM(
+            input_size=X_train.shape[-1],
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            dropout=dropout,
+            seq_len=params.get("time_steps", X_train_lstm.shape[1])
+        ).to(device)
 
         criterion = nn.BCELoss()
         optimizer = optim.Adam(model.parameters(), lr=learning_rate)
@@ -500,7 +494,7 @@ def train_lstm(params: Dict[str, Any]):
                 inputs, labels = inputs.to(device), labels.to(device)
                 optimizer.zero_grad()
                 outputs = model(inputs)
-                loss = criterion(outputs, labels)
+                loss = criterion(outputs, labels.squeeze())
                 loss.backward()
                 optimizer.step()
 
@@ -525,14 +519,28 @@ def train_lstm(params: Dict[str, Any]):
     best_params = study.best_params
     logger.info("Best LSTM params: %s (AUC: %.4f)", best_params, study.best_value)
 
+    params.update({
+        "hidden_size": best_params["hidden_size"],
+        "num_layers": best_params["num_layers"],
+        "dropout_rate": float(best_params["dropout"]),
+        "learning_rate": best_params["learning_rate"],
+        "batch_size": best_params["batch_size"],
+    })
+
     # Retrain best model
-    model = LSTMModel(input_size=len(features), hidden_size=best_params["hidden_size"], num_layers=best_params["num_layers"], dropout=best_params["dropout"]).to(device)
+    model = AttentiveBiLSTM(
+        input_size=X_train.shape[-1],
+        hidden_size=params["hidden_size"],
+        num_layers=params["num_layers"],
+        dropout=params["dropout_rate"],
+        seq_len=params["time_steps"]
+    ).to(device)
 
     criterion = nn.BCELoss()
-    optimizer = optim.Adam(model.parameters(), lr=best_params["learning_rate"])
+    optimizer = optim.Adam(model.parameters(), lr=params["learning_rate"])
 
     train_dataset = TensorDataset(torch.tensor(X_train_lstm, dtype=torch.float32), torch.tensor(y_train.values, dtype=torch.float32).unsqueeze(1))
-    train_loader = DataLoader(train_dataset, batch_size=best_params["batch_size"], shuffle=True)
+    train_loader = DataLoader(train_dataset, batch_size=params["batch_size"], shuffle=True)
 
     for epoch in tqdm(range(params.get("epochs", 50))):
         model.train()
@@ -540,7 +548,7 @@ def train_lstm(params: Dict[str, Any]):
             inputs, labels = inputs.to(device), labels.to(device)
             optimizer.zero_grad()
             outputs = model(inputs)
-            loss = criterion(outputs, labels)
+            loss = criterion(outputs, labels.squeeze())
             loss.backward()
             optimizer.step()
 
@@ -549,7 +557,7 @@ def train_lstm(params: Dict[str, Any]):
     val_preds = []
     with torch.no_grad():
         val_dataset = TensorDataset(torch.tensor(X_val_lstm, dtype=torch.float32), torch.tensor(y_val.values, dtype=torch.float32).unsqueeze(1))
-        val_loader = DataLoader(val_dataset, batch_size=best_params["batch_size"])
+        val_loader = DataLoader(val_dataset, batch_size=params["batch_size"])
         for inputs, _ in val_loader:
             inputs = inputs.to(device)
             outputs = model(inputs)
@@ -562,7 +570,7 @@ def train_lstm(params: Dict[str, Any]):
     test_preds = []
     with torch.no_grad():
         test_dataset = TensorDataset(torch.tensor(X_test_lstm, dtype=torch.float32), torch.tensor(y_test.values, dtype=torch.float32).unsqueeze(1))
-        test_loader = DataLoader(test_dataset, batch_size=best_params["batch_size"])
+        test_loader = DataLoader(test_dataset, batch_size=params["batch_size"])
         for inputs, _ in test_loader:
             inputs = inputs.to(device)
             outputs = model(inputs)
@@ -579,9 +587,9 @@ def train_lstm(params: Dict[str, Any]):
     )
     lstm_config = {
         "input_size": len(features),
-        "hidden_size": best_params["hidden_size"],
-        "num_layers": best_params["num_layers"],
-        "dropout": float(best_params["dropout"]),
+        "hidden_size": params["hidden_size"],
+        "num_layers": params["num_layers"],
+        "dropout": float(params["dropout_rate"]),
         "seq_len": lstm_seq_len,
         "time_steps": lstm_seq_len,
         "feature_cols": list(features),

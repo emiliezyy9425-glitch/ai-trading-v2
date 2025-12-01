@@ -65,7 +65,10 @@ class TradingDataset(Dataset):
         self.seq_len = seq_len
         self.features = [c for c in df.columns if c not in ["timestamp", "ticker", "decision", "price"]]
         self.X = df[self.features].values.astype(np.float32)
-        self.y = (df["decision"] == "Buy").astype(np.float32).values
+        # Directly learn from the ``decision`` column so labeling pipelines can
+        # control the target encoding (e.g., 0=Buy, 1=Sell from
+        # ``add_decision_column.py``).
+        self.y = df["decision"].astype(np.float32).values
         self.valid_idx = np.arange(seq_len, len(df))
 
     def __len__(self): return len(self.valid_idx)

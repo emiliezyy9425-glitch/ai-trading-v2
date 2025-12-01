@@ -3,18 +3,16 @@
 #  FULLY MATCHES retrain_models.py — LSTM + RF/XGB/LGB + PPO + Transformer
 # --------------------------------------------------------------
 import os
-import json
 import logging
+import json
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Dict, Tuple, Optional, List
 import numpy as np
 import pandas as pd
 import torch
-import torch.nn as nn
 from joblib import load
 from stable_baselines3 import PPO
-from models.transformer import TransformerModel
 
 os.environ["SB3_PPO_WARN"] = "0"
 
@@ -314,129 +312,6 @@ MODEL_NAMES: tuple[str, ...] = (
 )
 MODEL_DECISION_COLUMNS: tuple[str, ...] = tuple(f"{name}_decision" for name in MODEL_NAMES)
 
-# ------------------------------------------------------------------
-#  LSTM Model — EXACTLY MATCHES TRAINING
-# ------------------------------------------------------------------
-class LSTMModel(nn.Module):
-    def __init__(self, input_size: int, hidden_size: int, num_layers: int, dropout: float):
-        super().__init__()
-        self.lstm = nn.LSTM(
-            input_size=input_size,
-            hidden_size=hidden_size,
-            num_layers=num_layers,
-            dropout=dropout if num_layers > 1 else 0.0,
-            batch_first=True
-        )
-        self.fc = nn.Linear(hidden_size, 1)
-        self.sigmoid = nn.Sigmoid()
-
-    def forward(self, x):
-        out, _ = self.lstm(x)
-        out = self.fc(out[:, -1, :])
-        return self.sigmoid(out)
-
-
-def _infer_lstm_cfg_from_state(pt_path: Path) -> Optional[Dict]:
-    """Best-effort inference of LSTM hyperparameters from the saved weights."""
-
-    try:
-        state_dict = torch.load(pt_path, map_location="cpu")
-    except Exception as exc:
-        logging.error(f"Unable to inspect LSTM weights: {exc}")
-        return None
-
-    weight_keys = [k for k in state_dict.keys() if k.startswith("lstm.weight_ih_l")]
-    if not weight_keys:
-        logging.error("LSTM state dict missing expected weight_ih entries")
-        return None
-
-    first_weight = state_dict[weight_keys[0]]
-    if first_weight.ndim != 2:
-        logging.error("Unexpected LSTM weight tensor shape: %s", tuple(first_weight.shape))
-        return None
-
-    hidden_size = first_weight.shape[0] // 4
-    input_size = first_weight.shape[1]
-
-    layer_indices: List[int] = []
-    for key in weight_keys:
-        suffix = key.split("lstm.weight_ih_l", 1)[1]
-        layer_token = suffix.split("_")[0]
-        if layer_token.isdigit():
-            layer_indices.append(int(layer_token))
-
-    num_layers = (max(layer_indices) + 1) if layer_indices else 1
-
-    cfg = {
-        "input_size": input_size,
-        "hidden_size": hidden_size,
-        "num_layers": num_layers,
-        "dropout": 0.0,
-        "seq_len": 1,
-        "time_steps": 1,
-        "feature_cols": FEATURE_NAMES,
-    }
-    return cfg
-
-
-def _load_lstm() -> Tuple[Optional[nn.Module], Optional[Dict], Optional[str]]:
-    pt_path = MODEL_DIR / "updated_lstm.pt"
-    cfg_path = MODEL_DIR / "updated_lstm.json"
-
-    if not pt_path.exists():
-        return None, None, "missing_pt"
-
-    # First, try to load a fully-serialized model (structure + weights)
-    try:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        full_model = torch.load(pt_path, map_location=device)
-        if isinstance(full_model, nn.Module):
-            full_model.eval()
-            logging.info(f"LSTM loaded as full model from {pt_path}")
-            return full_model, None, None
-    except Exception as exc:
-        logging.debug(
-            "Failed to load LSTM checkpoint as a full model (will try state_dict): %s",
-            exc,
-        )
-
-    cfg = None
-    if cfg_path.exists():
-        try:
-            with open(cfg_path) as f:
-                cfg = json.load(f)
-        except Exception as e:
-            return None, None, f"cfg_error: {e}"
-    else:
-        logging.warning("LSTM config missing; attempting to infer from weights.")
-        cfg = _infer_lstm_cfg_from_state(pt_path)
-        if cfg is None:
-            return None, None, "missing_cfg"
-        try:
-            with open(cfg_path, "w") as f:
-                json.dump(cfg, f, indent=2)
-            logging.info(f"Inferred LSTM config saved → {cfg_path}")
-        except Exception as exc:
-            logging.warning(f"Failed to persist inferred LSTM config: {exc}")
-
-    try:
-        model = LSTMModel(
-            input_size=cfg["input_size"],
-            hidden_size=cfg["hidden_size"],
-            num_layers=cfg["num_layers"],
-            dropout=cfg.get("dropout", 0.0)
-        )
-        state_dict = torch.load(pt_path, map_location="cpu")
-        model.load_state_dict(state_dict)
-        model.eval()
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        model.to(device)
-        logging.info(f"LSTM loaded via state_dict from {pt_path}")
-        return model, cfg, None
-    except Exception as e:
-        return None, None, f"load_error: {e}"
-
-
 def _ensure_dataframe(data: object) -> pd.DataFrame:
     """Return a one-row dataframe regardless of the original input type."""
 
@@ -467,174 +342,73 @@ def predict_lightgbm(df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
     return _predict_tabular_model(df, "LightGBM", MODEL_DIR / "lgb_latest.joblib")
 
 
-def predict_lstm(df: pd.DataFrame, seq_len: Optional[int] = None) -> Tuple[np.ndarray, np.ndarray]:
+def predict_lstm(df: pd.DataFrame, seq_len: int = 60):
     df = _apply_feature_aliases(_ensure_dataframe(df))
-
-    model, cfg, err = _load_lstm()
-    if err:
-        logging.warning(f"LSTM load failed: {err}")
+    model_path = MODEL_DIR / "lstm_best.pt"
+    if not model_path.exists():
+        logging.warning("LSTM model not found: %s", model_path)
         return np.array([]), np.array([])
 
-    cols = cfg.get("feature_cols", FEATURE_NAMES)  # Matches retrain save (has feature_cols)
-    missing = [c for c in cols if c not in df.columns]
-    if missing:
-        logging.error(f"LSTM missing features: {missing[:5]}...")
-        return np.array([]), np.array([])
-
-    # Build sequence for LSTM — ALWAYS use latest CLOSED bar as the final (most recent) entry
-    use_seq_len = seq_len or cfg.get("seq_len") or cfg.get("time_steps") or 60
     try:
-        use_seq_len = int(use_seq_len)
-    except (TypeError, ValueError):
-        use_seq_len = 60
-
-    sorted_df = df.sort_index()
-    feature_df = _prepare_feature_frame(sorted_df, cols)
-    df_seq = pad_sequence_to_length(
-        feature_df,
-        target_length=use_seq_len,
-        feature_columns=cols,
-    )
-
-    expected_features = len(cols)
-    actual_features = df_seq.shape[1] if df_seq.ndim == 2 else df_seq.shape[-1]
-    if actual_features != expected_features:
-        logging.error(
-            "Feature count mismatch in LSTM: expected %d, got %d. Check live feature builder vs training.",
-            expected_features,
-            actual_features,
-        )
-        return np.array([]), np.array([])
-
-    X = df_seq.reshape((1, use_seq_len, -1))  # (1 batch, seq_len, features) for single prediction
-
-    device = next(model.parameters()).device
-    model.eval()
-
-    with torch.no_grad():
-        tensor = torch.tensor(X, dtype=torch.float32, device=device)
-        outputs = model(tensor)
-
-        # Ensure probabilities even if the saved model emits logits.
-        if torch.max(outputs) > 1 or torch.min(outputs) < 0:
-            outputs = torch.sigmoid(outputs)
-
-        probs = outputs.cpu().numpy().flatten()
-        decisions = (probs > 0.5).astype(int)
-    return probs, decisions
-
-
-def _load_transformer() -> Tuple[Optional[nn.Module], Optional[Dict], Optional[str]]:
-    pt_path = MODEL_DIR / "updated_transformer.pt"
-    cfg_path = MODEL_DIR / "updated_transformer.json"
-    if not pt_path.exists():
-        return None, None, "missing_pt"
-    if not cfg_path.exists():
-        return None, None, "missing_cfg"
-
-    try:
-        with open(cfg_path) as f:
-            cfg = json.load(f)
-    except Exception as e:
-        return None, None, f"cfg_error: {e}"
-
-    try:
-        model = TransformerModel(
-            input_size=cfg["input_size"],
-            d_model=cfg["d_model"],
-            nhead=cfg["nhead"],
-            num_layers=cfg["num_layers"],
-            dim_feedforward=cfg["dim_feedforward"],
-            dropout=cfg.get("dropout", 0.0)
-        )
-        state_dict = torch.load(pt_path, map_location="cpu")
-
-        # Remap legacy layer names (e.g., "embed" -> "embedding", "classifier" -> "fc")
-        remapped_state = {}
-        for old_key, value in state_dict.items():
-            new_key = old_key.replace("embed", "embedding").replace("classifier", "fc")
-            remapped_state[new_key] = value
-
-        model.load_state_dict(remapped_state)
+        # 使用你当前真实的模型类
+        from models.lstm import AttentiveBiLSTM
+        model = AttentiveBiLSTM(input_size=len(FEATURE_NAMES))
+        state_dict = torch.load(model_path, map_location="cpu")
+        model.load_state_dict(state_dict)
         model.eval()
-        return model, cfg, None
     except Exception as e:
-        return None, None, f"load_error: {e}"
+        logging.error(f"LSTM load failed: {e}")
+        return np.array([]), np.array([])
+
+    seq = pad_sequence_to_length(df, seq_len)
+    if seq.shape[0] < seq_len:
+        return np.array([]), np.array([])
+
+    X = torch.tensor(seq.values, dtype=torch.float32).unsqueeze(0)  # (1, seq_len, features)
+
+    try:
+        with torch.no_grad():
+            logit = model(X).numpy()[0]
+            prob = 1 / (1 + np.exp(-logit))  # sigmoid
+            decision = 1 if prob > 0.5 else 0
+            return np.array([prob]), np.array([decision])
+    except Exception as e:
+        logging.error(f"LSTM inference error: {e}")
+        return np.array([]), np.array([])
 
 
-def predict_transformer(df: pd.DataFrame, seq_len: Optional[int] = None) -> Tuple[np.ndarray, np.ndarray]:
+def predict_transformer(df: pd.DataFrame, seq_len: int = 60):
     df = _apply_feature_aliases(_ensure_dataframe(df))
-
-    model, cfg, err = _load_transformer()
-    if err:
-        logging.warning(f"Transformer load failed: {err}")
+    model_path = MODEL_DIR / "transformer_best.pt"
+    if not model_path.exists():
+        logging.warning("Transformer model not found: %s", model_path)
         return np.array([]), np.array([])
 
-    saved_cols = cfg.get("feature_cols")
-    if saved_cols:
-        cols = list(dict.fromkeys(saved_cols))
-    else:
-        saved_order = _load_feature_order()
-        cols = saved_order or FEATURE_NAMES
-
-    input_size = int(cfg.get("input_size", len(cols)))
-    if len(cols) != input_size:
-        saved_order = _load_feature_order()
-        if saved_order and len(saved_order) == input_size:
-            cols = saved_order
-            logging.info(
-                "Using saved transformer feature order (%d columns) to match input_size.",
-                len(saved_order),
-            )
-        else:
-            logging.warning(
-                "Transformer config input_size (%d) differs from feature_cols length (%d); aligning to input_size.",
-                input_size,
-                len(cols),
-            )
-            if len(cols) > input_size:
-                cols = cols[:input_size]
-            else:
-                filler = [c for c in FEATURE_NAMES if c not in cols]
-                cols = [*cols, *filler[: input_size - len(cols)]]
-
-    missing = [c for c in cols if c not in df.columns]
-    if missing:
-        logging.error(f"Transformer missing features: {missing[:5]}...")
+    try:
+        from models.transformer import TransformerModel
+        model = TransformerModel(input_size=len(FEATURE_NAMES))
+        state_dict = torch.load(model_path, map_location="cpu")
+        model.load_state_dict(state_dict)
+        model.eval()
+    except Exception as e:
+        logging.error(f"Transformer load failed: {e}")
         return np.array([]), np.array([])
 
-    # Use seq_len from cfg or param (matches retrain's time_steps)
-    use_seq_len = seq_len or cfg.get("time_steps", 1)
-    sorted_df = df.sort_index()
-    feature_df = _prepare_feature_frame(sorted_df, cols)
-    df_seq = pad_sequence_to_length(
-        feature_df,
-        target_length=use_seq_len,
-        feature_columns=cols,
-    )
-
-    expected_features = len(cols)
-    actual_features = df_seq.shape[1] if df_seq.ndim == 2 else df_seq.shape[-1]
-    if actual_features != expected_features:
-        logging.error(
-            "Feature count mismatch in Transformer: expected %d, got %d. Check live feature builder vs training.",
-            expected_features,
-            actual_features,
-        )
+    seq = pad_sequence_to_length(df, seq_len)
+    if seq.shape[0] < seq_len:
         return np.array([]), np.array([])
 
-    X = df_seq.reshape((1, use_seq_len, -1))
+    X = torch.tensor(seq.values, dtype=torch.float32).unsqueeze(0)
 
-    with torch.no_grad():
-        outputs = model(torch.tensor(X, dtype=torch.float32))
-
-        # Ensure probabilities even if the saved model emits logits.
-        if torch.max(outputs) > 1 or torch.min(outputs) < 0:
-            outputs = torch.sigmoid(outputs)
-
-        probs = outputs.cpu().numpy().flatten()
-        decisions = (probs > 0.5).astype(int)
-    return probs, decisions
+    try:
+        with torch.no_grad():
+            logit = model(X).numpy()[0]
+            prob = 1 / (1 + np.exp(-logit))
+            decision = 1 if prob > 0.5 else 0
+            return np.array([prob]), np.array([decision])
+    except Exception as e:
+        logging.error(f"Transformer inference error: {e}")
+        return np.array([]), np.array([])
 
 
 # ------------------------------------------------------------------

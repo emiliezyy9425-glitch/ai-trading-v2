@@ -5,8 +5,9 @@
 import importlib.util
 import logging
 import os
+from functools import lru_cache
 from pathlib import Path
-from typing import Dict, Tuple, Optional
+from typing import Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -24,6 +25,13 @@ os.environ["SB3_PPO_WARN"] = "0"
 # ------------------------------------------------------------------
 PROJECT_ROOT = Path(__file__).resolve().parent
 MODEL_DIR = PROJECT_ROOT / "models"
+EXTERNAL_MODEL_DIR = Path("/app/models")
+
+MODEL_SEARCH_DIRS: List[Path] = [
+    d for d in [EXTERNAL_MODEL_DIR, MODEL_DIR] if d.exists()
+]
+if not MODEL_SEARCH_DIRS:
+    MODEL_SEARCH_DIRS = [MODEL_DIR]
 
 # LIVE ENSEMBLE THRESHOLDS (2025 Dec 当前真实阈值)
 ENSEMBLE_THRESHOLDS = {
@@ -39,6 +47,80 @@ NUCLEAR_XGB = 0.940
 NUCLEAR_LSTM = 0.990
 
 
+def _first_existing(paths: Iterable[Path]) -> Optional[Path]:
+    for path in paths:
+        if path.exists():
+            return path
+    return None
+
+
+@lru_cache(maxsize=1)
+def _load_feature_order() -> List[str]:
+    order_path = _first_existing(p / "feature_order.joblib" for p in MODEL_SEARCH_DIRS)
+    if order_path:
+        try:
+            order = list(load(order_path))
+            logging.info("Loaded feature order from %s", order_path)
+            return order
+        except Exception as exc:
+            logging.warning("Failed to load feature_order.joblib: %s", exc)
+    return list(FEATURE_NAMES)
+
+
+@lru_cache(maxsize=1)
+def _load_transformer_feature_order() -> List[str]:
+    order_path = _first_existing(
+        p / "transformer_feature_order.joblib" for p in MODEL_SEARCH_DIRS
+    )
+    if order_path:
+        try:
+            order = list(load(order_path))
+            logging.info("Loaded transformer feature order from %s", order_path)
+            return order
+        except Exception as exc:
+            logging.warning("Failed to load transformer_feature_order.joblib: %s", exc)
+    return []
+
+
+@lru_cache(maxsize=1)
+def _load_scaler():
+    scaler_path = _first_existing(
+        p / name
+        for p in MODEL_SEARCH_DIRS
+        for name in ("textscaler.joblib", "scaler.joblib")
+    )
+    if not scaler_path:
+        logging.warning("No scaler artifact found; proceeding without scaling")
+        return None
+    try:
+        scaler = load(scaler_path)
+        logging.info("Loaded scaler from %s", scaler_path)
+        return scaler
+    except Exception as exc:
+        logging.warning("Failed to load scaler from %s: %s", scaler_path, exc)
+        return None
+
+
+def _prepare_features(df: pd.DataFrame, *, for_transformer: bool = False) -> pd.DataFrame:
+    feature_order = (
+        _load_transformer_feature_order() if for_transformer else _load_feature_order()
+    )
+    if not feature_order:
+        feature_order = list(FEATURE_NAMES)
+
+    aligned = df.reindex(columns=feature_order, fill_value=0.0).astype(float)
+    scaler = _load_scaler()
+    if scaler is None:
+        return aligned
+
+    try:
+        scaled = scaler.transform(aligned)
+        return pd.DataFrame(scaled, columns=feature_order, index=df.index)
+    except Exception as exc:
+        logging.warning("Scaling failed; using unscaled features. Error: %s", exc)
+        return aligned
+
+
 def _module_available(module_name: str) -> bool:
     """Return True if the given module can be imported."""
 
@@ -51,9 +133,13 @@ def _module_available(module_name: str) -> bool:
 
 
 def predict_lstm(df: pd.DataFrame, seq_len: int = 60) -> Tuple[np.ndarray, np.ndarray]:
-    model_path = MODEL_DIR / "lstm_best.pt"
-    if not model_path.exists():
+    model_path = _first_existing(p / "lstm_best.pt" for p in MODEL_SEARCH_DIRS)
+    if not model_path:
         logging.warning("LSTM model missing: %s", model_path)
+        return np.array([]), np.array([])
+
+    if df.empty:
+        logging.warning("No features available for LSTM prediction")
         return np.array([]), np.array([])
 
     if not _module_available("models.lstm"):
@@ -71,7 +157,7 @@ def predict_lstm(df: pd.DataFrame, seq_len: int = 60) -> Tuple[np.ndarray, np.nd
         logging.error("LSTM load failed: %s", exc)
         return np.array([]), np.array([])
 
-    seq = pad_sequence_to_length(df, seq_len)
+    seq = pad_sequence_to_length(df, seq_len, feature_columns=list(df.columns))
     if len(seq) < seq_len:
         return np.array([]), np.array([])
 
@@ -84,9 +170,13 @@ def predict_lstm(df: pd.DataFrame, seq_len: int = 60) -> Tuple[np.ndarray, np.nd
 
 
 def predict_transformer(df: pd.DataFrame, seq_len: int = 60) -> Tuple[np.ndarray, np.ndarray]:
-    model_path = MODEL_DIR / "transformer_best.pt"
-    if not model_path.exists():
+    model_path = _first_existing(p / "transformer_best.pt" for p in MODEL_SEARCH_DIRS)
+    if not model_path:
         logging.warning("Transformer model missing: %s", model_path)
+        return np.array([]), np.array([])
+
+    if df.empty:
+        logging.warning("No features available for Transformer prediction")
         return np.array([]), np.array([])
 
     if not _module_available("models.transformer"):
@@ -104,7 +194,7 @@ def predict_transformer(df: pd.DataFrame, seq_len: int = 60) -> Tuple[np.ndarray
         logging.error("Transformer load failed: %s", exc)
         return np.array([]), np.array([])
 
-    seq = pad_sequence_to_length(df, seq_len)
+    seq = pad_sequence_to_length(df, seq_len, feature_columns=list(df.columns))
     if len(seq) < seq_len:
         return np.array([]), np.array([])
 
@@ -117,8 +207,8 @@ def predict_transformer(df: pd.DataFrame, seq_len: int = 60) -> Tuple[np.ndarray
 
 
 def predict_ppo(df: pd.DataFrame, seq_len: int = 60) -> Tuple[np.ndarray, np.ndarray, Dict]:
-    model_path = MODEL_DIR / "ppo_trader.zip"
-    if not model_path.exists():
+    model_path = _first_existing(p / "ppo_trader.zip" for p in MODEL_SEARCH_DIRS)
+    if not model_path:
         logging.warning("PPO model missing: %s", model_path)
         return np.array([]), np.array([]), {}
 
@@ -128,7 +218,7 @@ def predict_ppo(df: pd.DataFrame, seq_len: int = 60) -> Tuple[np.ndarray, np.nda
         logging.error("PPO load failed: %s", exc)
         return np.array([]), np.array([]), {}
 
-    seq = pad_sequence_to_length(df, seq_len)
+    seq = pad_sequence_to_length(df, seq_len, feature_columns=list(df.columns))
     if len(seq) < seq_len:
         return np.array([]), np.array([]), {}
 
@@ -177,32 +267,38 @@ def predict_ppo(df: pd.DataFrame, seq_len: int = 60) -> Tuple[np.ndarray, np.nda
 
 
 def predict_rf(df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
-    path = MODEL_DIR / "rf_best.joblib"
-    if not path.exists():
+    path = _first_existing(p / "rf_best.joblib" for p in MODEL_SEARCH_DIRS)
+    if not path:
+        return np.array([]), np.array([])
+    if df.empty:
         return np.array([]), np.array([])
     model = load(path)
-    X = df[FEATURE_NAMES].values[-1:].astype(float)
-    prob = model.predict_proba(X)[0][1]
+    X = df.tail(1)
+    prob = float(model.predict_proba(X)[0][1])
     return np.array([prob]), np.array([1 if prob > 0.5 else 0])
 
 
 def predict_xgb(df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
-    path = MODEL_DIR / "xgb_best.joblib"
-    if not path.exists():
+    path = _first_existing(p / "xgb_best.joblib" for p in MODEL_SEARCH_DIRS)
+    if not path:
+        return np.array([]), np.array([])
+    if df.empty:
         return np.array([]), np.array([])
     model = load(path)
-    X = df[FEATURE_NAMES].values[-1:].astype(float)
-    prob = model.predict_proba(X)[0][1]
+    X = df.tail(1)
+    prob = float(model.predict_proba(X)[0][1])
     return np.array([prob]), np.array([1 if prob > 0.5 else 0])
 
 
 def predict_lgb(df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
-    path = MODEL_DIR / "lgb_best.joblib"
-    if not path.exists():
+    path = _first_existing(p / "lgb_best.joblib" for p in MODEL_SEARCH_DIRS)
+    if not path:
+        return np.array([]), np.array([])
+    if df.empty:
         return np.array([]), np.array([])
     model = load(path)
-    X = df[FEATURE_NAMES].values[-1:].astype(float)
-    prob = model.predict_proba(X)[0][1]
+    X = df.tail(1)
+    prob = float(model.predict_proba(X)[0][1])
     return np.array([prob]), np.array([1 if prob > 0.5 else 0])
 
 
@@ -213,34 +309,40 @@ def predict_lgb(df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
 def predict_with_all_models(sequence_df: pd.DataFrame, seq_len: int = 60) -> Tuple[Dict[str, Tuple[np.ndarray, np.ndarray]], Dict]:
     preds: Dict[str, Tuple[np.ndarray, np.ndarray]] = {}
 
+    prepared = _prepare_features(sequence_df)
+    prepared_transformer = _prepare_features(sequence_df, for_transformer=True)
+
     try:
-        preds["RandomForest"] = predict_rf(sequence_df)
+        preds["RandomForest"] = predict_rf(prepared)
     except Exception as exc:
         logging.error("RandomForest prediction failed: %s", exc)
 
     try:
-        preds["XGBoost"] = predict_xgb(sequence_df)
+        preds["XGBoost"] = predict_xgb(prepared)
     except Exception as exc:
         logging.error("XGBoost prediction failed: %s", exc)
 
     try:
-        preds["LightGBM"] = predict_lgb(sequence_df)
+        preds["LightGBM"] = predict_lgb(prepared)
     except Exception as exc:
         logging.error("LightGBM prediction failed: %s", exc)
 
     try:
-        lstm_probs, lstm_decisions = predict_lstm(sequence_df, seq_len)
+        lstm_probs, lstm_decisions = predict_lstm(prepared, seq_len)
         preds["LSTM"] = (lstm_probs, lstm_decisions)
     except Exception as exc:
         logging.error("LSTM prediction failed: %s", exc)
 
     try:
-        transformer_probs, transformer_decisions = predict_transformer(sequence_df, seq_len)
+        transformer_probs, transformer_decisions = predict_transformer(
+            prepared_transformer if not prepared_transformer.empty else prepared,
+            seq_len,
+        )
         preds["Transformer"] = (transformer_probs, transformer_decisions)
     except Exception as exc:
         logging.error("Transformer prediction failed: %s", exc)
 
-    ppo_prob, ppo_decision, ppo_meta = predict_ppo(sequence_df, seq_len)
+    ppo_prob, ppo_decision, ppo_meta = predict_ppo(prepared, seq_len)
     preds["PPO"] = (ppo_prob, ppo_decision)
 
     return preds, ppo_meta if ppo_meta else {}

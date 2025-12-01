@@ -776,6 +776,7 @@ def train_transformer(params: Dict[str, Any]):
             num_layers=num_layers,
             dim_feedforward=d_model * 4,   # standard 4× rule
             dropout=dropout,
+            max_seq_len=seq_len,
         ).to(device)
 
         criterion = nn.BCELoss()
@@ -873,6 +874,7 @@ def train_transformer(params: Dict[str, Any]):
         num_layers=params["num_layers"],
         dim_feedforward=params["dim_feedforward"],
         dropout=params["dropout"],
+        max_seq_len=params["time_steps"],
     ).to(device)
 
     optimizer = optim.AdamW(final_model.parameters(), lr=params["learning_rate"], weight_decay=0.01)

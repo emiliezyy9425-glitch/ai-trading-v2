@@ -4854,12 +4854,13 @@ def process_single_ticker(
 
     # --- PREDICTION & MODEL DECISIONS ---
     ticker_settings = _get_ticker_settings(ticker)
-    predictions = predict_with_all_models(sequence_df)
-    preds = predictions
+    preds, ppo_meta = predict_with_all_models(sequence_df)
     current_position = get_position_size(ib, ticker)
 
     # After you get the decision from ml_predictor
-    decision, info = ml_predictor.independent_model_decisions(preds, return_details=True)
+    decision, info = ml_predictor.independent_model_decisions(
+        (preds, ppo_meta), return_details=True
+    )
 
     ppo_action = info.get("ppo_action", 1)
 

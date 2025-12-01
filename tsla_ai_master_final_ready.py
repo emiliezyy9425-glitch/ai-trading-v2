@@ -5134,7 +5134,7 @@ def process_single_ticker(
     source = "ML"
     ai_decision = decision_log
     ml_decision = str(ml_vote).upper()
-    model_decisions = _format_model_decisions(vote_detail)
+    model_decisions = _format_model_decisions(decision_detail)
     trade_side = "LONG" if stock_decision == "BUY" else "SHORT" if stock_decision == "SELL" else None
     write_trade_csv(
         {

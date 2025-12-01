@@ -1295,20 +1295,13 @@ ORDER_SIZE = int(os.getenv("ORDER_SIZE", "1"))
 MAX_DAILY_PUT_TRADES = int(os.getenv("MAX_DAILY_PUT_TRADES", "15"))
 MAX_DAILY_CALL_TRADES = int(os.getenv("MAX_DAILY_CALL_TRADES", "15"))
 DEFAULT_EQUITY_FRACTION = 0.01  # Target 1% of account equity per trade
-TD9_RULE_BUY_VALUES = {9, 10, 11, 12, 13}
-TD9_RULE_SELL_VALUES = {-9, -10, -11, -12, -13}
-TD9_RULE_EQUITY_FRACTION = 0.01  # Allocate 1% of equity to TD9 rule trades
-TD9_RULE_MAX_EQUITY_FRACTION = 0.10  # Cap TD9 positions at 10% of equity
-TD9_RULE_SOURCE = "TD9_RULE"
 # Validate .env configurations
 required_env_vars = ["ORDER_SIZE", "MAX_DAILY_PUT_TRADES", "MAX_DAILY_CALL_TRADES"]
 for var in required_env_vars:
     if not os.getenv(var):
         logger.warning(f"⚠️ Environment variable {var} not set. Using default value.")
 
-# Track open trades and the most recent realized outcome per ticker/strategy so
-# that the sizing logic can apply TD9-specific pyramiding rules while leaving
-# ML-driven trades unchanged.
+# Track open trades and the most recent realized outcome per ticker/strategy.
 _OPEN_TRADES: Dict[str, Dict[str, Any]] = {}
 _LAST_TRADE_RESULTS: Dict[str, Dict[str, Dict[str, float]]] = {}
 _GLOBAL_TRADE_RESULT_KEY = "__GLOBAL__"
@@ -1367,17 +1360,6 @@ _load_last_trade_results()
 
 def _ticker_key(ticker: str) -> str:
     return ticker.upper()
-
-
-def evaluate_td9_rule(td9_value: int) -> Optional[str]:
-    """Return the stock decision implied by the TD9 1H rule."""
-
-    if td9_value in TD9_RULE_BUY_VALUES:
-        return "BUY"
-    if td9_value in TD9_RULE_SELL_VALUES:
-        return "SELL"
-    return None
-
 
 def _record_open_trade(
     ticker: str, side: str, quantity: int, price: float, strategy: str
@@ -3582,7 +3564,6 @@ def execute_stock_trade_ibkr(
     except Exception as e:
         logger.error(f"Failed to fetch account equity: {e}\n{traceback.format_exc()}")
         net_liq = 0.0
-    td9_trade = source_label == TD9_RULE_SOURCE
     last_pnl, last_size = get_last_trade_result(ticker, source_label)
     lot_size = get_round_lot_size(price)
     same_direction_as_position = (decision == "BUY" and pos_qty > 0) or (
@@ -3634,15 +3615,7 @@ def execute_stock_trade_ibkr(
             last_pnl,
             last_size,
             allow_loss_doubling=False,
-            max_equity_fraction=TD9_RULE_MAX_EQUITY_FRACTION if td9_trade else None,
         )
-        if td9_trade and last_pnl is not None and last_pnl > 0 and qty_equity > 0:
-            logger.info(
-                "Previous TD9 trade for %s gained %.2f; reverting to base sizing (%s shares).",
-                ticker,
-                last_pnl,
-                qty_equity,
-            )
     if decision == "BUY":
         if pos_qty < 0:
             if not close_short_position(ib, ticker, price):
@@ -5097,27 +5070,8 @@ def process_single_ticker(
     ml_vote = decision
     stock_mapping = {"Buy": "BUY", "Sell": "SELL", "Hold": "HOLD"}
     stock_decision = stock_mapping.get(ml_vote, "HOLD")
-    td9_rule_decision = evaluate_td9_rule(td9_1h)
-    td9_rule_active = td9_rule_decision is not None
-    if td9_rule_active:
-        if stock_decision != td9_rule_decision:
-            logger.info(
-                "📐 TD9 1H rule overriding ML stock decision for %s: %s -> %s (td9_1h=%s)",
-                ticker,
-                stock_decision,
-                td9_rule_decision,
-                td9_1h,
-            )
-        else:
-            logger.info(
-                "📐 TD9 1H rule confirmed %s signal for %s (td9_1h=%s)",
-                stock_decision,
-                ticker,
-                td9_1h,
-            )
-        stock_decision = td9_rule_decision
-    stock_equity_fraction = TD9_RULE_EQUITY_FRACTION if td9_rule_active else None
-    stock_trade_source = TD9_RULE_SOURCE if td9_rule_active else "ML_STOCK"
+    stock_trade_source = "ML_STOCK"
+    stock_equity_fraction = None
     pos_qty, avg_cost = get_position_info(ib, ticker)
     logger.info(f"ML stock decision for {ticker}: {stock_decision}")
     log_model_decision(

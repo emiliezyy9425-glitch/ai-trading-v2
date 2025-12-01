@@ -20,7 +20,6 @@ import numpy as np
 import tsla_ai_master_final_ready as live_trading
 from tsla_ai_master_final_ready import build_feature_row, is_us_equity_session_open
 from ml_predictor import (
-    FEATURE_ALIASES,
     predict_with_all_models,
     independent_model_decisions,
 )

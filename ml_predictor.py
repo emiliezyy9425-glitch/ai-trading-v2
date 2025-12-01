@@ -11,9 +11,9 @@ MODEL_DIR = Path("/app/models")
 OPTIMAL_CONF = {
     "lstm": 0.96,
     "transformer": 0.985,
+    "rf": 0.80,  # live-safe (0.73 is more aggressive)
     "xgb": 0.78,
     "lgb": 0.76,
-    "rf": 0.80,
 }
 
 def _find(*names):
@@ -252,11 +252,13 @@ def ultimate_decision(preds, ppo_meta=None):
         return "EXECUTE", seq_vote, "DEEPSEQ_NUCLEAR"
 
     # Tier 1: Triple Tree Nuclear (second highest)
+    tree_votes = [vote.get(m) for m in ["RandomForest", "XGBoost", "LightGBM"] if m in vote]
     if (
         rf_conf >= 0.78
         and conf.get("XGBoost", 0) >= OPTIMAL_CONF["xgb"]
         and conf.get("LightGBM", 0) >= OPTIMAL_CONF["lgb"]
-        and vote.get("RandomForest") == vote.get("XGBoost", "Hold") == vote.get("LightGBM", "Hold")
+        and len(tree_votes) == 3
+        and len(set(tree_votes)) == 1
     ):
         return "EXECUTE", rf_vote, "TRIPLE_TREE_NUCLEAR"
 

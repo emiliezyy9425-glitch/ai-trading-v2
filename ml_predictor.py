@@ -178,35 +178,59 @@ FEATURE_ALIASES = {
 def independent_model_decisions(preds, return_details=False):
     preds, ppo_meta = preds if isinstance(preds, tuple) else (preds, {})
     q = []
-    for name, (prob, _) in preds.items():
-        if name not in ["RandomForest","XGBoost","LightGBM","LSTM","Transformer"]: continue
-        if len(prob)==0: continue
-        p = float(prob[-1])
-        conf = p if p > 0.5 else 1-p
-        thresh = {
-            "rf": 0.80,
-            "xgb": 0.91,
-            "lgb": 0.80,
-            "lstm": 0.88,        # 关键！0.88 是当前 LSTM 的最佳触发点
-            "transformer": 0.90,
-        }.get(name.lower()[:3], 0.9)
+    vote_detail = {}
+    conf_detail = {}
 
-        # 强制覆盖 LSTM（防止未来改回来）
-        if name.lower().startswith("lstm"):
-            thresh = 0.88
-        if conf >= thresh:
-            q.append((name.lower()[:3], "Buy" if p>0.5 else "Sell", conf))
+    for name, (prob, pred) in preds.items():
+        if name not in ["RandomForest","XGBoost","LightGBM","LSTM","Transformer"]:
+            continue
+        if len(prob) == 0:
+            continue
+        p = float(prob[-1])
+        c = p if p > 0.5 else 1 - p
+        vote = "Buy" if p > 0.5 else "Sell"
+        short_name = name.lower()[:3] if name != "RandomForest" else "rf"
+        vote_detail[name] = vote
+        conf_detail[name] = c
+
+        thresh = {
+            "rf": 0.80, "xgb": 0.91, "lgb": 0.80,
+            "lstm": 0.88, "transformer": 0.90
+        }.get(short_name, 0.9)
+
+        if c >= thresh:
+            q.append((short_name, vote, c))
+
+    # 记录 PPO（虽然不参与核确认）
+    vote_detail["PPO"] = "Aggressive" if ppo_meta.get("action", 1) == 2 else "Hold"
+    conf_detail["PPO"] = float(ppo_meta.get("action_conf", ppo_meta.get("conf", [0.6]))[0])
 
     if len(q) < 3:
-        return "Hold" if not return_details else ("Hold", {"reason": "less than 3 qualified"})
+        reason = "less than 3 qualified"
+        decision = "Hold"
+    else:
+        nuclear = any(
+            (n == "xgb" and c >= 0.90) or
+            (n == "lstm" and c >= 0.87) or
+            (n == "transformer" and c >= 0.89)
+            for n, _, c in q
+        )
+        if not nuclear:
+            reason = "no nuclear"
+            decision = "Hold"
+        else:
+            reason = "NUCLEAR BUY!"
+            decision = "Buy"
 
-    nuclear = any(
-        (n == "xgb" and c >= 0.90) or
-        (n == "lstm" and c >= 0.87) or
-        (n == "transformer" and c >= 0.89)
-        for n, _, c in q
-    )
-    if not nuclear:
-        return "Hold" if not return_details else ("Hold", {"reason": "no nuclear"})
+    if not return_details:
+        return decision
 
-    return "Buy" if not return_details else ("Buy", {"reason": "NUCLEAR BUY!", "confidence": np.mean([c for _,_,c in q])})
+    return decision, {
+        "reason": reason,
+        "confidence": np.mean([c for _,_,c in q]) if q else 0.0,
+        "qualified_models": len(q),
+        "votes": vote_detail,
+        "confidences": conf_detail,
+        "ppo_action": ppo_meta.get("action", 1),
+        "ppo_entropy": ppo_meta.get("entropy", 0.5),
+    }

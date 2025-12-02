@@ -162,7 +162,7 @@ US_MARKET_HOLIDAYS: set[date] = set()
 US_EASTERN = pytz.timezone("America/New_York")
 # Assuming these are defined in separate files; placeholders for imports
 import ml_predictor
-from ml_predictor import predict_with_all_models
+from ml_predictor import predict_with_all_models, ultimate_decision
 
 # These are required by the main script — ml_predictor now defines them again
 MODEL_NAMES = ("LSTM", "Transformer")
@@ -4909,23 +4909,68 @@ def process_single_ticker(
     preds, ppo_meta = predict_with_all_models(sequence_df)
     current_position = get_position_size(ib, ticker)
 
+    decision_log = "HOLD"
+    direction = "Hold"
+    reason = "No reason"
+
     # === FINAL LIVE DECISION LOGIC (MUST BE HERE) ===
     try:
-        result = ml_predictor.independent_model_decisions(
-            preds,
-            return_details=True,
+        decision_state, direction, reason = ml_predictor.ultimate_decision(
+            preds, ppo_meta
         )
 
-        # Handle both old and new return formats (bulletproof)
-        if isinstance(result, str):
-            decision = result
-            info = {}
+        info = {
+            "reason": reason,
+            "trigger": reason,
+            "confidence": 0.0,
+            "decision_state": decision_state,
+            "direction": direction,
+            "ppo_action": ppo_meta.get("action", 1),
+            "ppo_value": ppo_meta.get("value", 0.0),
+            "ppo_value_ma100": ppo_meta.get("value_ma100", 0.0),
+            "ppo_value_std100": ppo_meta.get("value_std100", 0.5),
+            "ppo_entropy": ppo_meta.get("entropy", 0.3),
+            "last_direction": direction,
+            "consecutive_count": 0,
+            "prev_ppo_action": ppo_meta.get("prev_action", ppo_meta.get("action", 1)),
+            "votes": {
+                k: ("Buy" if p[-1] > 0.5 else "Sell")
+                for k, (p, _) in preds.items()
+                if k != "PPO" and len(p)
+            },
+            "confidences": {
+                k: max(float(pr[-1]), 1 - float(pr[-1]))
+                for k, (pr, _) in preds.items()
+                if k != "PPO" and len(pr)
+            },
+            "probabilities": {
+                k: float(pr[-1]) if len(pr) else 0.5
+                for k, (pr, _) in preds.items()
+                if k != "PPO"
+            },
+        }
+
+        if "PPO" in preds:
+            ppo_prob, _ = preds.get("PPO", ([], []))
+            if len(ppo_prob):
+                info.setdefault("votes", {})["PPO"] = (
+                    "Buy" if ppo_prob[-1] > 0.5 else "Sell"
+                )
+                info.setdefault("confidences", {})["PPO"] = max(
+                    float(ppo_prob[-1]), 1 - float(ppo_prob[-1])
+                )
+                info.setdefault("probabilities", {})["PPO"] = float(ppo_prob[-1])
+                info["confidence"] = max(info["confidences"].values(), default=0.0)
+
+        if decision_state == "EXECUTE":
+            decision = direction
+            decision_log = f"{direction.upper()} ({reason})"
         else:
-            decision, info = result
+            decision = "Hold"
+            decision_log = "HOLD"
 
         trigger = info.get("trigger", "UNKNOWN")
         confidence = info.get("confidence", 0.0)
-        reason = info.get("reason", "No reason")
 
         logger.info(
             f"FINAL DECISION: {decision} | Trigger: {trigger} | Conf: {confidence:.3f} | {reason}"
@@ -4934,6 +4979,8 @@ def process_single_ticker(
     except Exception as e:
         logger.error(f"Decision engine failed: {e}\n{traceback.format_exc()}")
         decision, info = "Hold", {}
+        decision_log = "HOLD"
+        reason = "Decision engine failed"
 
     trigger = info.get("trigger", "UNKNOWN")
     confidence = float(info.get("confidence", 0.0))
@@ -5086,7 +5133,7 @@ def process_single_ticker(
     td9_str = td9_summary_1h
     fib_str = fib_summary_1h
     source = "ML"
-    ai_decision = decision_log
+    ai_decision = f"{direction} ({reason})"
     ml_decision = str(ml_vote).upper()
     model_decisions = _format_model_decisions(decision_detail)
     trade_side = "LONG" if stock_decision == "BUY" else "SHORT" if stock_decision == "SELL" else None
@@ -5106,6 +5153,7 @@ def process_single_ticker(
             "IV": iv,
             "Delta": delta,
             "Source": source,
+            "ensemble_reason": reason,
             "ai_decision": ai_decision,
             "ml_decision": ml_decision,
             **model_decisions,

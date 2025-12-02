@@ -338,7 +338,7 @@ FEATURE_ALIASES = {
 def independent_model_decisions(ticker: str, feature_seq: np.ndarray, detail: dict):
     seq = pad_sequence_to_length(feature_seq, 120)
 
-    # Global predictions (THE THREE GODS)
+    # === THE THREE GODS SPEAK ===
     trans_prob = predict_transformer(seq)
     tcn_prob = predict_tcn(seq)
 
@@ -357,7 +357,7 @@ def independent_model_decisions(ticker: str, feature_seq: np.ndarray, detail: di
     trans_conf = max(trans_prob, 1 - trans_prob)
     tcn_conf = max(tcn_prob, 1 - tcn_prob)
 
-    # === TRIPLE NUCLEAR — THE FINAL FORM (ONLY THIS MATTERS) ===
+    # === TRIPLE NUCLEAR — THE FINAL FORM ===
     if (lstm_conf >= 0.96 and
         trans_conf >= 0.98 and
         tcn_conf >= 0.92 and
@@ -365,7 +365,7 @@ def independent_model_decisions(ticker: str, feature_seq: np.ndarray, detail: di
         direction = "Buy" if tcn_prob > 0.5 else "Sell"
         return "EXECUTE", direction, "TRIPLE_NUCLEAR"
 
-    # === LEGACY TRIGGERS (backup only) ===
+    # === BACKUP TRIGGERS (only if gods are silent) ===
     if rf_conf >= 0.80:
         return "EXECUTE", rf_vote, "RF_SOLO"
 

@@ -205,6 +205,7 @@ def predict_lstm(df: pd.DataFrame, seq_len: int = 60):
 
 def predict_transformer(df: pd.DataFrame, seq_len: int = 120):
     if transformer_model is None or transformer_scaler is None:
+        logger.warning("Global Transformer not available")
         return np.array([]), np.array([])
 
     feature_df = df[FEATURE_NAMES].fillna(0)

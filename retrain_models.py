@@ -745,12 +745,12 @@ def train_transformer(params: Dict[str, Any]):
 
     # 4. NO-LEAK SEQUENCE CREATION (safe for 8h forward label)
     def create_sequences_safe(X, y, seq_len):
-        max_start = len(X) - seq_len - 8 + 1  # +8 because label looks 8h ahead
-        if max_start <= 0:
-            return np.array([]), np.array([])
-        seqs = np.array([X[i:i + seq_len] for i in range(max_start)])
-        labels = y[seq_len + 7 : seq_len + 7 + len(seqs)]  # label at end of sequence + 8h
-        return seqs, labels
+        sequences = []
+        labels = []
+        for i in range(len(X) - seq_len - 7):  # -7 because we need 8 more bars after end
+            sequences.append(X[i:i + seq_len])
+            labels.append(y[i + seq_len - 1])  # label at the end of the sequence
+        return np.array(sequences), np.array(labels)
 
     X_seq, y_seq = create_sequences_safe(X, y, seq_len)
     if len(X_seq) < 5000:

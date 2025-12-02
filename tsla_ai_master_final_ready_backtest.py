@@ -23,7 +23,7 @@ import ml_predictor
 from ml_predictor import (
     FEATURE_ALIASES,
     predict_with_all_models,
-    independent_model_decisions,
+    ultimate_decision,
 )
 from indicators import summarize_td_sequential
 from sp500_above_20d import load_sp500_above_20d_history
@@ -494,39 +494,52 @@ def run_backtest(
             sequence_df, seq_len=FEATURE_SEQUENCE_WINDOW
         )
 
-        # Extract individual model predictions
-        tcn_prob = preds.get("TCN", [0.5])[-1] if "TCN" in preds else 0.5
-        tcn_default_conf = tcn_prob if tcn_prob > 0.5 else 1 - tcn_prob
-        tcn_default_vote = "Buy" if tcn_prob > 0.5 else "Sell"
-
-        # === 100% IDENTICAL TO LIVE TRADING DECISION PATH ===
-        try:
-            # This is EXACTLY what live trading does
-            raw_result = ml_predictor.independent_model_decisions(
-                preds,
-                ppo_meta=ppo_meta,
-                return_details=True
-            )
-
-            # Handle both return formats (defensive)
-            if isinstance(raw_result, str):
-                decision = raw_result
-                details = {}
-            else:
-                decision, details = raw_result
-
-            # This is what live trading uses
-            final_decision = decision  # Already "Buy"/"Sell"/"Hold"
-
-        except Exception as e:
-            logger.error(f"Decision engine failed in backtest: {e}")
-            final_decision = "Hold"
-            details = {}
-        decision = final_decision
-        detail = details
-        print(
-            f"DEBUG: {now} → {decision} | {detail.get('reason', 'no reason')}"
+        # === NEW: Use the correct ultimate decision engine ===
+        decision_state, direction, reason = ml_predictor.ultimate_decision(
+            preds, ppo_meta
         )
+        decision_upper = direction.upper() if decision_state == "EXECUTE" else "HOLD"
+        print(f"DEBUG: {now} → {decision_state} {direction} | {reason}")
+
+        # For logging compatibility
+        detail = {
+            "reason": reason,
+            "decision_state": decision_state,
+            "direction": direction,
+            "ppo_action": ppo_meta.get("action", 1),
+            "ppo_value": ppo_meta.get("value", 0.0),
+            "ppo_value_ma100": ppo_meta.get("value_ma100", 0.0),
+            "ppo_value_std100": ppo_meta.get("value_std100", 0.5),
+            "ppo_entropy": ppo_meta.get("entropy", 0.0),
+            "votes": {
+                k: ("Buy" if p[-1] > 0.5 else "Sell")
+                for k, (p, _) in preds.items()
+                if k != "PPO" and len(p)
+            },
+            "confidences": {
+                k: max(float(pr[-1]), 1 - float(pr[-1]))
+                for k, (pr, _) in preds.items()
+                if k != "PPO" and len(pr)
+            },
+            "probabilities": {
+                k: float(pr[-1]) if len(pr) else 0.5
+                for k, (pr, _) in preds.items()
+                if k != "PPO"
+            },
+        }
+
+        if "PPO" in preds:
+            ppo_prob, _ = preds.get("PPO", ([], []))
+            if len(ppo_prob):
+                detail.setdefault("votes", {})["PPO"] = (
+                    "Buy" if ppo_prob[-1] > 0.5 else "Sell"
+                )
+                detail.setdefault("confidences", {})["PPO"] = max(
+                    float(ppo_prob[-1]), 1 - float(ppo_prob[-1])
+                )
+                detail.setdefault("probabilities", {})["PPO"] = float(ppo_prob[-1])
+
+        decision = decision_upper
 
         # === CORRECTED POSITION MANAGEMENT (paste this exactly) ===
         signal_triggered = False

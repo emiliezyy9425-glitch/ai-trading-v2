@@ -335,48 +335,45 @@ FEATURE_ALIASES = {
 }
 
 # 核确认（最强逻辑）
-def independent_model_decisions(preds, return_details=False):
-    preds, ppo_meta = preds if isinstance(preds, tuple) else (preds, {})
+def independent_model_decisions(ticker: str, feature_seq: np.ndarray, detail: dict):
+    seq = pad_sequence_to_length(feature_seq, 120)
 
-    prob, conf, vote = _collect_prob_conf_vote(preds)
-    status, action, trigger = ultimate_decision(preds, ppo_meta)
+    # Global predictions (THE THREE GODS)
+    trans_prob = predict_transformer(seq)
+    tcn_prob = predict_tcn(seq)
 
-    decision = action if status == "EXECUTE" else "Hold"
+    # Extract from detail
+    vote = detail.get("vote", {})
+    conf = detail.get("confidences", {})
+    prob = detail.get("probabilities", {})
+    ppo_meta = detail.get("ppo", {})
 
-    def _mean_conf(model_names):
-        vals = [conf[m] for m in model_names if m in conf]
-        return float(np.mean(vals)) if vals else 0.0
+    lstm_prob = prob.get("LSTM", 0.5)
+    rf_conf = conf.get("RandomForest", 0.0)
+    rf_vote = vote.get("RandomForest", "Hold")
 
-    confidence_lookup = {
-        "DEEPSEQ_NUCLEAR": _mean_conf(["LSTM", "Transformer"]),
-        "TRIPLE_NUCLEAR": _mean_conf(["LSTM", "Transformer", "TCN"]),
-        "TRIPLE_TREE_NUCLEAR": _mean_conf(["RandomForest", "XGBoost", "LightGBM"]),
-        "RF_SOLO": conf.get("RandomForest", 0.0),
-        "PPO_BREAKER": _mean_conf(["RandomForest"]),
-    }
+    # Confidence = distance from 0.5
+    lstm_conf = max(lstm_prob, 1 - lstm_prob)
+    trans_conf = max(trans_prob, 1 - trans_prob)
+    tcn_conf = max(tcn_prob, 1 - tcn_prob)
 
-    ppo_conf_raw = ppo_meta.get("action_conf", ppo_meta.get("conf", [0.6]))
-    if isinstance(ppo_conf_raw, (list, np.ndarray)):
-        ppo_conf = float(ppo_conf_raw[0]) if len(ppo_conf_raw) else 0.6
-    else:
-        ppo_conf = float(ppo_conf_raw)
+    # === TRIPLE NUCLEAR — THE FINAL FORM (ONLY THIS MATTERS) ===
+    if (lstm_conf >= 0.96 and
+        trans_conf >= 0.98 and
+        tcn_conf >= 0.92 and
+        (lstm_prob > 0.5) == (trans_prob > 0.5) == (tcn_prob > 0.5)):
+        direction = "Buy" if tcn_prob > 0.5 else "Sell"
+        return "EXECUTE", direction, "TRIPLE_NUCLEAR"
 
-    if not return_details:
-        return decision
+    # === LEGACY TRIGGERS (backup only) ===
+    if rf_conf >= 0.80:
+        return "EXECUTE", rf_vote, "RF_SOLO"
 
-    return decision, {
-        "reason": trigger,
-        "trigger": trigger,
-        "decision_state": status,
-        "confidence": confidence_lookup.get(trigger, 0.0),
-        "qualified_models": len(prob),
-        "votes": {**vote, "PPO": "Aggressive" if ppo_meta.get("action", 1) == 2 else "Hold"},
-        "confidences": {**conf, "PPO": ppo_conf},
-        "ppo_action": ppo_meta.get("action", 1),
-        "ppo_entropy": ppo_meta.get("entropy", 0.5),
-        "nuclear_buy_votes": sum(1 for v in vote.values() if v == "Buy"),
-        "nuclear_sell_votes": sum(1 for v in vote.values() if v == "Sell"),
-    }
+    tree_agree = all(vote.get(m) == rf_vote for m in ["XGBoost", "LightGBM"] if vote.get(m))
+    if tree_agree and rf_conf >= 0.78:
+        return "EXECUTE", rf_vote, "TRIPLE_TREE"
+
+    return "HOLD", "Hold", "NO_SIGNAL"
 
 
 def _collect_prob_conf_vote(preds):

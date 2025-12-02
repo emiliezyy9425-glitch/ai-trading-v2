@@ -165,7 +165,7 @@ import ml_predictor
 from ml_predictor import predict_with_all_models, ultimate_decision
 
 # These are required by the main script — ml_predictor now defines them again
-MODEL_NAMES = ("LSTM", "Transformer")
+MODEL_NAMES = ("LSTM", "Transformer", "TCN")
 MODEL_DECISION_COLUMNS = tuple(f"{name}_decision" for name in MODEL_NAMES)
 from indicators import (
     calculate_rsi,
@@ -4950,6 +4950,13 @@ def process_single_ticker(
             },
         }
 
+        # TCN — safe defaults using actual prediction probabilities
+        tcn_prob = preds.get("TCN", (np.array([0.5]), np.array([0])))[0]
+        tcn_prob = tcn_prob[0] if len(tcn_prob) > 0 else 0.5
+        info.setdefault("votes", {})["TCN"] = "Buy" if tcn_prob > 0.5 else "Sell"
+        info.setdefault("confidences", {})["TCN"] = tcn_prob if tcn_prob > 0.5 else 1 - tcn_prob
+        info.setdefault("probabilities", {})["TCN"] = tcn_prob
+
         if "PPO" in preds:
             ppo_prob, _ = preds.get("PPO", ([], []))
             if len(ppo_prob):
@@ -5092,7 +5099,7 @@ def process_single_ticker(
         confidence,
     )
     logger.info(
-        "ML predictor details → LSTM: %s (%.6f) | TRANSFORMER: %s (%.6f) | Final decision: %s (trigger %s, confidence %.6f)",
+        "ML predictor details → LSTM: %s (%.6f) | TRANSFORMER: %s (%.6f) | TCN: %s (%.6f) | Final decision: %s (trigger %s, confidence %.6f)",
         detail_votes.get("LSTM", "N/A")
         if isinstance(detail_votes, Mapping)
         else "N/A",
@@ -5103,6 +5110,12 @@ def process_single_ticker(
         if isinstance(detail_votes, Mapping)
         else "N/A",
         detail_confidences.get("Transformer", 0.0)
+        if isinstance(detail_confidences, Mapping)
+        else 0.0,
+        detail_votes.get("TCN", "N/A")
+        if isinstance(detail_votes, Mapping)
+        else "N/A",
+        detail_confidences.get("TCN", 0.0)
         if isinstance(detail_confidences, Mapping)
         else 0.0,
         decision,

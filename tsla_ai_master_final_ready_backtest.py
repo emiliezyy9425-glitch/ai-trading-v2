@@ -612,21 +612,25 @@ def run_backtest(
         votes = detail.get("votes", {})
         confs = detail.get("confidences", {})
 
-        # New ensemble uses short names; fall back to legacy keys for compatibility
-        rf_v = votes.get("RandomForest", votes.get("rf", "Hold"))
-        rf_c = confs.get("RandomForest", confs.get("rf", 0.0))
-        xgb_v = votes.get("XGBoost", votes.get("xgb", "Hold"))
-        xgb_c = confs.get("XGBoost", confs.get("xgb", 0.0))
-        lgb_v = votes.get("LightGBM", votes.get("lgb", "Hold"))
-        lgb_c = confs.get("LightGBM", confs.get("lgb", 0.0))
-        lstm_v = votes.get("LSTM", votes.get("lstm", "Hold"))
-        lstm_c = confs.get("LSTM", confs.get("lstm", 0.0))
-        tcn_v = votes.get("TCN", votes.get("tcn", tcn_default_vote))
-        tcn_c = confs.get("TCN", confs.get("tcn", tcn_default_conf))
+        rf_v = votes.get("RandomForest", "Hold")
+        rf_c = confs.get("RandomForest", 0.0)
+        xgb_v = votes.get("XGBoost", "Hold")
+        xgb_c = confs.get("XGBoost", 0.0)
+        lgb_v = votes.get("LightGBM", "Hold")
+        lgb_c = confs.get("LightGBM", 0.0)
+        lstm_v = votes.get("LSTM", "Hold")
+        lstm_c = confs.get("LSTM", 0.0)
+        trans_v = votes.get("Transformer", "Hold")
+        trans_c = confs.get("Transformer", 0.0)
+
+        # TCN — safe defaults using actual prediction probabilities
+        tcn_prob = preds.get("TCN", (np.array([0.5]), np.array([0])))[0]
+        tcn_prob = tcn_prob[0] if len(tcn_prob) > 0 else 0.5
+        tcn_v = "Buy" if tcn_prob > 0.5 else "Sell"
+        tcn_c = tcn_prob if tcn_prob > 0.5 else 1 - tcn_prob
+
         ppo_v = "Aggressive" if detail.get("ppo_action") == 2 else "Reduce" if detail.get("ppo_action") == 0 else "Hold"
         ppo_c = detail.get("ppo_value", 0.0)
-        trans_v = votes.get("Transformer", votes.get("transformer", "Hold"))
-        trans_c = confs.get("Transformer", confs.get("transformer", 0.0))
 
         price_map = indicators.get("price", {})
 

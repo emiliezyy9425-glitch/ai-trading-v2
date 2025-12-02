@@ -62,7 +62,7 @@ def make_env(df_subset: pd.DataFrame):
     return lambda: TradingEnv(data=df_subset.copy())
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-MODEL_DIR = PROJECT_ROOT / "models"
+MODEL_DIR = Path("/app/models")
 LOG_DIR = PROJECT_ROOT / "logs"
 
 # --------------------------------------------------------------------------- #

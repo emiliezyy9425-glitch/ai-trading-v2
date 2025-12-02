@@ -387,10 +387,7 @@ def ultimate_decision(preds, ppo_meta=None):
     ppo_meta = ppo_meta or {}
     prob, conf, vote = _collect_prob_conf_vote(preds)
 
-    rf_conf = conf.get("RandomForest", 0)
-    rf_vote = vote.get("RandomForest", "Hold")
-
-    # === TRIPLE NUCLEAR (LSTM + Transformer + TCN) ===
+    # === CORRECT ORDER: TRIPLE NUCLEAR FIRST (THE TRUE FINAL BOSS) ===
     lstm_prob = prob.get("LSTM", 0.5)
     trans_prob = prob.get("Transformer", 0.5)
     tcn_prob = prob.get("TCN", 0.5)
@@ -408,18 +405,20 @@ def ultimate_decision(preds, ppo_meta=None):
         direction = "Buy" if tcn_prob > 0.5 else "Sell"
         return "EXECUTE", direction, "TRIPLE_NUCLEAR"
 
-    # === FIXED ORDER: DEEPSEQ FIRST (highest conviction) ===
-    # === Tier 0: TRUE DEEPSEQ NUCLEAR — the crown jewel ===
+    # === Tier 1: Only after Triple Nuclear fails → check DEEPSEQ ===
     lstm_prob = prob.get("LSTM", 0.5)
     trans_prob = prob.get("Transformer", 0.5)
     lstm_conf = max(lstm_prob, 1 - lstm_prob)      # confidence is distance from 0.5
     trans_conf = max(trans_prob, 1 - trans_prob)
 
-    if (lstm_conf >= 0.96 and 
+    if (lstm_conf >= 0.96 and
         trans_conf >= 0.995 and                          # raise it — 1.000 every bar is dangerous
         (lstm_prob > 0.5) == (trans_prob > 0.5)):        # ← THIS IS THE CRITICAL LINE
         direction = "Buy" if trans_prob > 0.5 else "Sell"
         return "EXECUTE", direction, "DEEPSEQ_NUCLEAR"
+
+    rf_conf = conf.get("RandomForest", 0)
+    rf_vote = vote.get("RandomForest", "Hold")
 
     # Tier 1: Triple Tree Nuclear (second highest)
     tree_models = ["RandomForest", "XGBoost", "LightGBM"]

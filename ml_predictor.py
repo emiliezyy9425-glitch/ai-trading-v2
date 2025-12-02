@@ -1,5 +1,5 @@
-# ml_predictor.py —— 2025-12-01 终极无敌版（已适配你所有真实模型）
-import os, logging, numpy as np, pandas as pd, torch
+# ml_predictor.py —— 2025-12-02 终极无敌版 + GLOBAL TCN + TRIPLE NUCLEAR
+import logging, numpy as np, pandas as pd, torch
 import joblib
 import torch.nn as nn
 from pathlib import Path
@@ -12,6 +12,11 @@ logger = logging.getLogger(__name__)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 MODEL_DIR = Path("/app/models")
+
+# ==================== GLOBAL MODELS ====================
+transformer_model = None
+transformer_scaler = None
+tcn_model = None
 
 OPTIMAL_CONF = {
     "lstm": 0.96,
@@ -29,121 +34,135 @@ def _find(*names):
                 return sorted(matches, key=lambda x: x.stat().st_mtime, reverse=True)[0]
     return None
 
-# ==================== TCN MODEL (ADDED — DOES NOT REPLACE ANYTHING) ====================
+
+# --- Transformer Model (Global) ---
+class TransformerModel(nn.Module):
+    def __init__(self, input_size=len(FEATURE_NAMES)):
+        super().__init__()
+        d_model = 384
+        self.input_proj = nn.Linear(input_size, d_model)
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=8,
+            dim_feedforward=1536,
+            dropout=0.15,
+            activation="gelu",
+            batch_first=True,
+            norm_first=True,
+        )
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=3)
+        self.classifier = nn.Sequential(
+            nn.Linear(d_model, 192),
+            nn.GELU(),
+            nn.Dropout(0.1),
+            nn.Linear(192, 1),
+        )
+
+    def forward(self, x):
+        x = self.input_proj(x) * (384 ** 0.5)
+        x = self.transformer(x)
+        x = x[:, -1, :]
+        return self.classifier(x).squeeze(-1)
+
+
+# --- TCN Model (Global) ---
 class TemporalBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size, dilation, dropout=0.2):
+    def __init__(self, in_channels, out_channels, kernel_size=3, dilation=1, dropout=0.25):
         super().__init__()
         padding = (kernel_size - 1) * dilation
         self.conv1 = nn.Conv1d(in_channels, out_channels, kernel_size, padding=padding, dilation=dilation)
-        self.chomp = nn.utils.weight_norm(nn.Conv1d(out_channels, out_channels, 1))
-        self.relu = nn.ReLU()
-        self.dropout = nn.Dropout(dropout)
-        self.norm = nn.BatchNorm1d(out_channels)
+        self.chomp1 = nn.Conv1d(out_channels, out_channels, 1)
+        self.relu1 = nn.ReLU()
+        self.dropout1 = nn.Dropout(dropout)
+
+        self.conv2 = nn.Conv1d(out_channels, out_channels, kernel_size, padding=padding, dilation=dilation)
+        self.chomp2 = nn.Conv1d(out_channels, out_channels, 1)
+        self.relu2 = nn.ReLU()
+        self.dropout2 = nn.Dropout(dropout)
+
+        self.net = nn.Sequential(
+            self.conv1,
+            self.chomp1,
+            self.relu1,
+            self.dropout1,
+            self.conv2,
+            self.chomp2,
+            self.relu2,
+            self.dropout2,
+        )
         self.downsample = nn.Conv1d(in_channels, out_channels, 1) if in_channels != out_channels else None
-        self.init_weights()
-
-    def init_weights(self):
-        nn.init.xavier_uniform_(self.conv1.weight)
-        if self.downsample:
-            nn.init.xavier_uniform_(self.downsample.weight)
+        self.relu = nn.ReLU()
 
     def forward(self, x):
-        residual = x
-        out = self.conv1(x)
-        out = out[:, :, :-self.conv1.padding[0]]
-        gate = torch.sigmoid(self.chomp(out))
-        out = self.relu(out) * gate
-        out = self.norm(self.dropout(out))
-        if self.downsample:
-            residual = self.downsample(residual)
-        return out + residual
-
-
-class TCN(nn.Module):
-    def __init__(self, n_features=77, channels=[64] * 8, kernel_size=3, dropout=0.2):
-        super().__init__()
-        layers = []
-        for i in range(len(channels)):
-            dilation = 2 ** i
-            in_ch = n_features if i == 0 else channels[i - 1]
-            out_ch = channels[i]
-            layers.append(TemporalBlock(in_ch, out_ch, kernel_size, dilation, dropout))
-        self.network = nn.Sequential(*layers)
-        self.classifier = nn.Linear(channels[-1], 1)
-
-    def forward(self, x):
-        x = x.transpose(1, 2)
-        y = self.network(x)
-        y = y[:, :, -1]
-        return torch.sigmoid(self.classifier(y)).squeeze(-1)
+        out = self.net(x)
+        out = out[:, :, : x.size(2)]
+        res = x if self.downsample is None else self.downsample(x)
+        return self.relu(out + res)
 
 
 class TCNGlobal(nn.Module):
-    def __init__(self, n_features=len(FEATURE_NAMES), channels=[128] * 8, kernel_size=3, dropout=0.25):
+    def __init__(self, n_features=len(FEATURE_NAMES)):
         super().__init__()
+        channels = [128] * 8
         layers = []
         for i, ch in enumerate(channels):
             dilation = 2 ** i
             in_ch = n_features if i == 0 else channels[i - 1]
-            layers.append(TemporalBlock(in_ch, ch, kernel_size, dilation, dropout))
+            layers.append(TemporalBlock(in_ch, ch, dilation=dilation))
         self.network = nn.Sequential(*layers)
         self.classifier = nn.Linear(channels[-1], 1)
         self.dropout = nn.Dropout(0.3)
 
     def forward(self, x):
-        x = x.transpose(1, 2)
+        x = x.transpose(1, 2)  # (B, S, F) → (B, F, S)
         x = self.network(x)
         x = x[:, :, -1]
         x = self.dropout(x)
         return self.classifier(x).squeeze(-1)
 
 
-def load_global_tcn():
-    path = "/app/models/tcn_global_best.pt"
-    if not Path(path).exists():
-        logger.warning("tcn_global_best.pt not found — falling back to dummy")
-        return None, 0.5
-    try:
-        model = TCNGlobal(n_features=len(FEATURE_NAMES)).to(device)
-        model.load_state_dict(torch.load(path, map_location=device))
-        model.eval()
-        return model, 1.0
-    except Exception as e:
-        logger.error(f"TCN global load failed: {e}")
-        return None, 0.5
+def load_global_models():
+    global transformer_model, transformer_scaler, tcn_model
+
+    trans_path = MODEL_DIR / "updated_transformer.pt"
+    scaler_path = MODEL_DIR / "transformer_scaler.joblib"
+    if trans_path.exists() and scaler_path.exists():
+        try:
+            transformer_model = TransformerModel().to(device)
+            transformer_model.load_state_dict(torch.load(trans_path, map_location=device))
+            transformer_scaler = joblib.load(scaler_path)
+            transformer_model.eval()
+            logger.info("GLOBAL TRANSFORMER LOADED")
+        except Exception as e:
+            logger.error(f"Transformer load failed: {e}")
+
+    tcn_path = MODEL_DIR / "tcn_global_best.pt"
+    if tcn_path.exists():
+        try:
+            tcn_model = TCNGlobal().to(device)
+            tcn_model.load_state_dict(torch.load(tcn_path, map_location=device))
+            tcn_model.eval()
+            logger.info("GLOBAL TCN LOADED — THE EMPEROR HAS AWAKENED")
+        except Exception as e:
+            logger.error(f"TCN load failed: {e}")
 
 
-def load_global_transformer():
-    path = "/app/models/updated_transformer.pt"
-    scaler_path = "/app/models/transformer_scaler.joblib"
-    if not Path(path).exists():
-        return None, 0.5
-    try:
-        from models.transformer import TransformerModel
-
-        model = TransformerModel(input_size=len(FEATURE_NAMES)).to(device)
-        model.load_state_dict(torch.load(path, map_location=device))
-        scaler = joblib.load(scaler_path) if Path(scaler_path).exists() else None
-        model.eval()
-        return model, scaler
-    except Exception as e:
-        logger.error(f"Transformer global load failed: {e}")
-        return None, 0.5
+load_global_models()
 
 
 # ==================== TCN PREDICTION FUNCTION (NEW) ====================
-def predict_tcn(df: pd.DataFrame, seq_len: int = 60):
-    model, _ = load_global_tcn()
-    if model is None:
+def predict_tcn(df: pd.DataFrame, seq_len: int = 120):
+    if tcn_model is None:
         return np.array([]), np.array([])
 
-    seq = pad_sequence_to_length(df[FEATURE_NAMES].fillna(0), seq_len, FEATURE_NAMES)
-    if len(seq) < seq_len:
+    target_len = max(seq_len, 120)
+    seq = pad_sequence_to_length(df[FEATURE_NAMES].fillna(0), target_len, FEATURE_NAMES)
+    if len(seq) < target_len:
         return np.array([]), np.array([])
 
     X = torch.tensor(seq, dtype=torch.float32).unsqueeze(0).to(device)
     with torch.no_grad():
-        prob = torch.sigmoid(model(X)).item()
+        prob = torch.sigmoid(tcn_model(X)).item()
 
     vote = 1 if prob > 0.5 else 0
     conf = prob if prob > 0.5 else 1 - prob
@@ -184,24 +203,24 @@ def predict_lstm(df: pd.DataFrame, seq_len: int = 60):
         prob = torch.sigmoid(model(X)).item()
     return np.array([prob]), np.array([1 if prob > 0.5 else 0])
 
-def predict_transformer(df: pd.DataFrame, seq_len: int = 60):
-    model, scaler = load_global_transformer()
-    if model is None or scaler is None:
+def predict_transformer(df: pd.DataFrame, seq_len: int = 120):
+    if transformer_model is None or transformer_scaler is None:
         return np.array([]), np.array([])
 
     feature_df = df[FEATURE_NAMES].fillna(0)
     try:
-        scaled_values = scaler.transform(feature_df.values)
+        scaled_values = transformer_scaler.transform(feature_df.values)
         feature_df = pd.DataFrame(scaled_values, columns=FEATURE_NAMES, index=df.index)
     except Exception as e:
         logging.error(f"Transformer scaling failed: {e}")
         return np.array([]), np.array([])
 
-    seq = pad_sequence_to_length(feature_df, seq_len, FEATURE_NAMES)
-    if len(seq) < seq_len: return np.array([]), np.array([])
+    target_len = max(seq_len, 120)
+    seq = pad_sequence_to_length(feature_df, target_len, FEATURE_NAMES)
+    if len(seq) < target_len: return np.array([]), np.array([])
     X = torch.tensor(seq, dtype=torch.float32).unsqueeze(0).to(device)
     with torch.no_grad():
-        prob = torch.sigmoid(model(X)).item()
+        prob = torch.sigmoid(transformer_model(X)).item()
     return np.array([prob]), np.array([1 if prob > 0.5 else 0])
 
 def predict_ppo(df: pd.DataFrame, seq_len: int = 60):
@@ -330,6 +349,7 @@ def independent_model_decisions(preds, return_details=False):
 
     confidence_lookup = {
         "DEEPSEQ_NUCLEAR": _mean_conf(["LSTM", "Transformer"]),
+        "TRIPLE_NUCLEAR": _mean_conf(["LSTM", "Transformer", "TCN"]),
         "TRIPLE_TREE_NUCLEAR": _mean_conf(["RandomForest", "XGBoost", "LightGBM"]),
         "RF_SOLO": conf.get("RandomForest", 0.0),
         "PPO_BREAKER": _mean_conf(["RandomForest"]),
@@ -372,6 +392,24 @@ def ultimate_decision(preds, ppo_meta=None):
 
     rf_conf = conf.get("RandomForest", 0)
     rf_vote = vote.get("RandomForest", "Hold")
+
+    # === TRIPLE NUCLEAR (LSTM + Transformer + TCN) ===
+    lstm_prob = prob.get("LSTM", 0.5)
+    trans_prob = prob.get("Transformer", 0.5)
+    tcn_prob = prob.get("TCN", 0.5)
+
+    lstm_conf = max(lstm_prob, 1 - lstm_prob)
+    trans_conf = max(trans_prob, 1 - trans_prob)
+    tcn_conf = max(tcn_prob, 1 - tcn_prob)
+
+    if (
+        lstm_conf >= 0.96
+        and trans_conf >= 0.98
+        and tcn_conf >= 0.92
+        and (lstm_prob > 0.5) == (trans_prob > 0.5) == (tcn_prob > 0.5)
+    ):
+        direction = "Buy" if tcn_prob > 0.5 else "Sell"
+        return "EXECUTE", direction, "TRIPLE_NUCLEAR"
 
     # === FIXED ORDER: DEEPSEQ FIRST (highest conviction) ===
     # === Tier 0: TRUE DEEPSEQ NUCLEAR — the crown jewel ===

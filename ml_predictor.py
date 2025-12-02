@@ -65,6 +65,44 @@ class TransformerModel(nn.Module):
         return self.classifier(x).squeeze(-1)
 
 
+# === SAFE GLOBAL TRANSFORMER LOADING ===
+def _load_transformer():
+    global transformer_model, transformer_scaler
+    trans_path = MODEL_DIR / "updated_transformer.pt"
+    scaler_path = MODEL_DIR / "transformer_scaler.joblib"
+
+    if not trans_path.exists():
+        logger.warning("updated_transformer.pt not found")
+        return False
+
+    try:
+        # Re-create model with exact same architecture
+        model = TransformerModel(input_size=len(FEATURE_NAMES)).to(device)
+        state_dict = torch.load(trans_path, map_location=device)
+
+        # Critical: remove unexpected keys (like 'total_ops') from DDP or profiling
+        state_dict = {k: v for k, v in state_dict.items() if k in model.state_dict()}
+
+        model.load_state_dict(state_dict, strict=True)
+        model.eval()
+        transformer_model = model
+
+        if scaler_path.exists():
+            transformer_scaler = joblib.load(scaler_path)
+        else:
+            logger.warning("transformer_scaler.joblib not found")
+            transformer_scaler = None
+
+        logger.info(
+            f"GLOBAL TRANSFORMER LOADED — {trans_path.name} ({trans_path.stat().st_size / 1e6:.1f} MB)"
+        )
+        return True
+    except Exception as e:
+        logger.error(f"FAILED to load Transformer: {e}")
+        logger.exception(e)  # This shows the REAL error
+        return False
+
+
 # --- TCN Model (Global) ---
 class TemporalBlock(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size=3, dilation=1, dropout=0.25):
@@ -124,17 +162,7 @@ class TCNGlobal(nn.Module):
 def load_global_models():
     global transformer_model, transformer_scaler, tcn_model
 
-    trans_path = MODEL_DIR / "updated_transformer.pt"
-    scaler_path = MODEL_DIR / "transformer_scaler.joblib"
-    if trans_path.exists() and scaler_path.exists():
-        try:
-            transformer_model = TransformerModel().to(device)
-            transformer_model.load_state_dict(torch.load(trans_path, map_location=device))
-            transformer_scaler = joblib.load(scaler_path)
-            transformer_model.eval()
-            logger.info("GLOBAL TRANSFORMER LOADED")
-        except Exception as e:
-            logger.error(f"Transformer load failed: {e}")
+    _load_transformer()
 
     tcn_path = MODEL_DIR / "tcn_global_best.pt"
     if tcn_path.exists():
@@ -206,7 +234,7 @@ def predict_lstm(df: pd.DataFrame, seq_len: int = 60):
 def predict_transformer(df: pd.DataFrame, seq_len: int = 120):
     if transformer_model is None or transformer_scaler is None:
         logger.warning("Global Transformer not available")
-        return np.array([]), np.array([])
+        return np.array([0.5]), np.array([0])
 
     feature_df = df[FEATURE_NAMES].fillna(0)
     try:

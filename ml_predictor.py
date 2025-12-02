@@ -1,5 +1,6 @@
 # ml_predictor.py —— 2025-12-01 终极无敌版（已适配你所有真实模型）
 import os, logging, numpy as np, pandas as pd, torch
+import joblib
 import torch.nn as nn
 from pathlib import Path
 from joblib import load
@@ -8,6 +9,7 @@ from self_learn import FEATURE_NAMES
 from sequence_utils import pad_sequence_to_length
 
 logger = logging.getLogger(__name__)
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 MODEL_DIR = Path("/app/models")
 
@@ -76,41 +78,76 @@ class TCN(nn.Module):
         return torch.sigmoid(self.classifier(y)).squeeze(-1)
 
 
+class TCNGlobal(nn.Module):
+    def __init__(self, n_features=len(FEATURE_NAMES), channels=[128] * 8, kernel_size=3, dropout=0.25):
+        super().__init__()
+        layers = []
+        for i, ch in enumerate(channels):
+            dilation = 2 ** i
+            in_ch = n_features if i == 0 else channels[i - 1]
+            layers.append(TemporalBlock(in_ch, ch, kernel_size, dilation, dropout))
+        self.network = nn.Sequential(*layers)
+        self.classifier = nn.Linear(channels[-1], 1)
+        self.dropout = nn.Dropout(0.3)
+
+    def forward(self, x):
+        x = x.transpose(1, 2)
+        x = self.network(x)
+        x = x[:, :, -1]
+        x = self.dropout(x)
+        return self.classifier(x).squeeze(-1)
+
+
+def load_global_tcn():
+    path = "/app/models/tcn_global_best.pt"
+    if not Path(path).exists():
+        logger.warning("tcn_global_best.pt not found — falling back to dummy")
+        return None, 0.5
+    try:
+        model = TCNGlobal(n_features=len(FEATURE_NAMES)).to(device)
+        model.load_state_dict(torch.load(path, map_location=device))
+        model.eval()
+        return model, 1.0
+    except Exception as e:
+        logger.error(f"TCN global load failed: {e}")
+        return None, 0.5
+
+
+def load_global_transformer():
+    path = "/app/models/updated_transformer.pt"
+    scaler_path = "/app/models/transformer_scaler.joblib"
+    if not Path(path).exists():
+        return None, 0.5
+    try:
+        from models.transformer import TransformerModel
+
+        model = TransformerModel(input_size=len(FEATURE_NAMES)).to(device)
+        model.load_state_dict(torch.load(path, map_location=device))
+        scaler = joblib.load(scaler_path) if Path(scaler_path).exists() else None
+        model.eval()
+        return model, scaler
+    except Exception as e:
+        logger.error(f"Transformer global load failed: {e}")
+        return None, 0.5
+
+
 # ==================== TCN PREDICTION FUNCTION (NEW) ====================
 def predict_tcn(df: pd.DataFrame, seq_len: int = 60):
-    ticker = "UNKNOWN"
-    if "ticker" in df.columns and len(df) > 0:
-        ticker = str(df["ticker"].iloc[-1]).upper()
-
-    path = _find(
-        f"tcn_best_{ticker.lower()}.pt",
-        f"tcn_best_{ticker.split('.')[0].lower()}.pt",
-        "tcn_best.pt",
-    )
-    if not path:
+    model, _ = load_global_tcn()
+    if model is None:
         return np.array([]), np.array([])
 
-    try:
-        model = TCN(n_features=len(FEATURE_NAMES))
-        state_dict = torch.load(path, map_location="cpu")
-        model.load_state_dict(state_dict)
-        model.eval()
-        logger.info(f"TCN loaded: {path.name}")
-    except Exception as e:
-        logger.warning(f"TCN load failed ({ticker}): {e}")
-        return np.array([]), np.array([])
-
-    seq = pad_sequence_to_length(df[FEATURE_NAMES].fillna(0), seq_len)
+    seq = pad_sequence_to_length(df[FEATURE_NAMES].fillna(0), seq_len, FEATURE_NAMES)
     if len(seq) < seq_len:
         return np.array([]), np.array([])
 
-    X = torch.tensor(seq, dtype=torch.float32).unsqueeze(0)
+    X = torch.tensor(seq, dtype=torch.float32).unsqueeze(0).to(device)
     with torch.no_grad():
-        prob = model(X).item()
+        prob = torch.sigmoid(model(X)).item()
 
     vote = 1 if prob > 0.5 else 0
     conf = prob if prob > 0.5 else 1 - prob
-    logger.info(f"TCN → {ticker} | prob={prob:.4f} | conf={conf:.4f}")
+    logger.info(f"TCN → prob={prob:.4f} | conf={conf:.4f}")
     return np.array([prob]), np.array([vote])
 
 # ================== 兼容你的真实模型架构 ==================
@@ -148,21 +185,21 @@ def predict_lstm(df: pd.DataFrame, seq_len: int = 60):
     return np.array([prob]), np.array([1 if prob > 0.5 else 0])
 
 def predict_transformer(df: pd.DataFrame, seq_len: int = 60):
-    path = _find("updated_transformer.pt, transformer_best.pt, transformer_trial_*.pt")
-    if not path: return np.array([]), np.array([])
-
-    try:
-        from models.transformer import TransformerModel
-        model = TransformerModel(input_size=len(FEATURE_NAMES))
-        model.load_state_dict(torch.load(path, map_location="cpu"))
-        model.eval()
-    except Exception as e:
-        logging.error(f"Transformer load failed: {e}")
+    model, scaler = load_global_transformer()
+    if model is None or scaler is None:
         return np.array([]), np.array([])
 
-    seq = pad_sequence_to_length(df, seq_len)
+    feature_df = df[FEATURE_NAMES].fillna(0)
+    try:
+        scaled_values = scaler.transform(feature_df.values)
+        feature_df = pd.DataFrame(scaled_values, columns=FEATURE_NAMES, index=df.index)
+    except Exception as e:
+        logging.error(f"Transformer scaling failed: {e}")
+        return np.array([]), np.array([])
+
+    seq = pad_sequence_to_length(feature_df, seq_len, FEATURE_NAMES)
     if len(seq) < seq_len: return np.array([]), np.array([])
-    X = torch.tensor(seq, dtype=torch.float32).unsqueeze(0)
+    X = torch.tensor(seq, dtype=torch.float32).unsqueeze(0).to(device)
     with torch.no_grad():
         prob = torch.sigmoid(model(X)).item()
     return np.array([prob]), np.array([1 if prob > 0.5 else 0])

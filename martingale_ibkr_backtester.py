@@ -240,11 +240,14 @@ async def run_backtest(symbol: str, timeframe: str) -> pd.DataFrame:
     # Save detailed log
     log_df = pd.DataFrame(trade_log)
     filename = f"martingale_{symbol}_{timeframe.replace(' ', '')}_results.csv"
-    desktop_dir = Path.home() / "Desktop"
-    desktop_dir.mkdir(parents=True, exist_ok=True)
-    log_path = desktop_dir / filename
-    log_df.to_csv(log_path, index=False)
-    print(f"Detailed trades saved → {log_path}\n")
+    desktop_path = Path("/host_desktop")
+    if desktop_path.exists():
+        log_path = desktop_path / filename
+        log_df.to_csv(log_path, index=False)
+        print(f"→ SAVED TO DESKTOP: {log_path.name}")
+    else:
+        log_df.to_csv(filename, index=False)
+        print(f"→ Saved locally (no desktop link): {filename}")
 
     if not log_df.empty:
         print(f"\nRunning detailed analysis for {symbol} | {timeframe}...")
@@ -342,8 +345,17 @@ def analyze_trades(
     plt.xlabel("Trade Number")
     plt.grid(True)
     plt.tight_layout()
-    plt.savefig(f"Equity_Curve_{timeframe_name.replace(' ', '_')}.png", dpi=200)
+    chart_filename = f"Equity_Curve_{timeframe_name.replace(' ', '_')}.png"
+    desktop_path = Path("/host_desktop")
+    if desktop_path.exists():
+        chart_path = desktop_path / chart_filename
+        plt.savefig(chart_path, dpi=200, bbox_inches="tight")
+        print(f"→ Chart saved to Desktop: {chart_path.name}")
+    else:
+        plt.savefig(chart_filename, dpi=200, bbox_inches="tight")
+        print(f"→ Chart saved locally: {chart_filename}")
     plt.show()
+    plt.close()
 
     return {
         "timeframe": timeframe_name,

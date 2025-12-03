@@ -12,8 +12,6 @@ from pathlib import Path
 
 import pandas as pd
 from ib_insync import IB, Stock, util
-import matplotlib.pyplot as plt
-import numpy as np
 
 # --------------------------- CONFIG ---------------------------
 TICKERS_FILE = Path("tickers.txt")

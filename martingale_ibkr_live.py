@@ -54,10 +54,6 @@ DURATION_MAP = {
     "1 day": "3 Y",
 }
 
-# Restrict live trading to higher timeframes (exclude sub-30m intervals)
-EXCLUDED_TIMEFRAMES = {"1 min", "2 mins", "3 mins", "5 mins", "15 mins"}
-LIVE_TIMEFRAMES = [tf for tf in TIMEFRAMES if tf not in EXCLUDED_TIMEFRAMES]
-
 
 # --------------------------- Persistence ---------------------------
 def load_tickers(path: Path) -> list[str]:
@@ -295,7 +291,7 @@ def main() -> None:
 
     try:
         for symbol in tickers:
-            for timeframe in LIVE_TIMEFRAMES:
+            for timeframe in TIMEFRAMES:
                 try:
                     execute_strategy_for_symbol(ib, symbol, timeframe, state)
                 except Exception:

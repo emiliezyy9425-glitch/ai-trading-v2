@@ -790,7 +790,11 @@ def train_transformer(params: Dict[str, Any]):
         dropout=params["dropout"],
     ).to(device)
 
-    criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(1.1))  # slight help for minority class
+    # Weight the positive class (buy) to counter class imbalance
+    positive_count = max((y == 1).sum(), 1)  # avoid division by zero
+    negative_count = max((y == 0).sum(), 1)
+    pos_weight = torch.tensor(negative_count / positive_count, dtype=torch.float32).to(device)
+    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
     optimizer = torch.optim.AdamW(model.parameters(), lr=params["learning_rate"], weight_decay=1e-5)
 
     best_val_auc = 0.0

@@ -100,10 +100,23 @@ async def run_backtest(symbol: str, timeframe: str) -> pd.DataFrame:
 
     # Download price data
     end_dt = datetime.now()
+    # --- NEW: 100% IBKR-COMPLIANT DURATION ---
+    DURATION_MAP = {
+        "1 min": "30 D",
+        "2 mins": "60 D",
+        "3 mins": "90 D",
+        "5 mins": "180 D",
+        "15 mins": "365 D",
+        "30 mins": "365 D",
+        "1 hour": "365 D",
+        "4 hours": "2 Y",
+        "1 day": "2 Y",
+    }
+    durationStr = DURATION_MAP[timeframe]
     bars = ib.reqHistoricalData(
         contract,
         endDateTime=end_dt,
-        durationStr="2 Y" if timeframe == "1 day" else "365 D",
+        durationStr=durationStr,
         barSizeSetting=timeframe,
         whatToShow="TRADES",
         useRTH=True,
@@ -227,8 +240,11 @@ async def run_backtest(symbol: str, timeframe: str) -> pd.DataFrame:
     # Save detailed log
     log_df = pd.DataFrame(trade_log)
     filename = f"martingale_{symbol}_{timeframe.replace(' ', '')}_results.csv"
-    log_df.to_csv(filename, index=False)
-    print(f"Detailed trades saved → {filename}\n")
+    desktop_dir = Path.home() / "Desktop"
+    desktop_dir.mkdir(parents=True, exist_ok=True)
+    log_path = desktop_dir / filename
+    log_df.to_csv(log_path, index=False)
+    print(f"Detailed trades saved → {log_path}\n")
 
     if not log_df.empty:
         print(f"\nRunning detailed analysis for {symbol} | {timeframe}...")

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import csv
 import logging
 import os
 from datetime import datetime
@@ -268,10 +269,11 @@ async def run_backtest(symbol: str, timeframe: str) -> pd.DataFrame:
     else:
         print("No trades to log.")
 
+    equity_curve = pd.Series([CAPITAL] + log_df["equity_after"].tolist()) if not log_df.empty else pd.Series([CAPITAL])
+
     if not log_df.empty:
-        eq = pd.Series([CAPITAL] + log_df["equity_after"].tolist())
         plt.figure(figsize=(12, 6))
-        plt.plot(eq, color="green", linewidth=2)
+        plt.plot(equity_curve, color="green", linewidth=2)
         plt.title(f"Equity Curve – {symbol} {timeframe}")
         plt.grid(True)
         plt.tight_layout()
@@ -280,7 +282,50 @@ async def run_backtest(symbol: str, timeframe: str) -> pd.DataFrame:
         print(f"Chart saved to {location}: {png_file.name}")
         plt.close()
 
-    return log_df
+    # === MASTER SUMMARY LOG (ONE FILE FOR ALL TIMEFRAMES) ===
+    net_profit = log_df["pnl_dollar"].sum() if not log_df.empty else 0.0
+    total_return = (equity_curve.iloc[-1] - CAPITAL) / CAPITAL * 100
+    rolling_max = equity_curve.cummax()
+    drawdown = equity_curve - rolling_max
+    max_dd = drawdown.min()
+    max_dd_pct = max_dd / rolling_max.max() * 100 if rolling_max.max() != 0 else 0.0
+    daily_ret = equity_curve.pct_change().dropna()
+    sharpe = np.sqrt(252) * daily_ret.mean() / daily_ret.std() if daily_ret.std() != 0 else 0.0
+
+    summary = {
+        "Symbol": symbol,
+        "Timeframe": timeframe,
+        "Start_Date": df.index[0].strftime("%Y-%m-%d"),
+        "End_Date": df.index[-1].strftime("%Y-%m-%d"),
+        "Duration_Days": (df.index[-1] - df.index[0]).days,
+        "Total_Trades": total_trades,
+        "Win_Rate_%": round(win_rate, 2),
+        "Total_PnL_$": round(net_profit, 2),
+        "Total_Return_%": round(total_return, 2),
+        "Annualized_Return_%": round((1 + total_return/100) ** (365 / max(1, (df.index[-1] - df.index[0]).days)) - 1, 4) * 100,
+        "Sharpe_Ratio": round(sharpe, 3),
+        "Max_Drawdown_%": round(max_dd_pct, 2),
+        "Max_Risk_Used_%": round(log_df['risk_percent'].max(), 1) if not log_df.empty else 1.0,
+        "Final_Equity_$": round(equity_curve.iloc[-1], 0),
+    }
+
+    # Append to master summary
+    summary_dir = Path("/host_desktop") if Path("/host_desktop").exists() else DATA_DIR
+    summary_dir.mkdir(parents=True, exist_ok=True)
+    summary_file = summary_dir / "martingale_summary_all_timeframes.csv"
+    file_exists = summary_file.exists()
+
+    with open(summary_file, mode='a', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=summary.keys())
+        if not file_exists:
+            writer.writeheader()
+        writer.writerow(summary)
+
+    print(f"MASTER SUMMARY UPDATED → {summary_file.name}")
+    print(f"Timeframe: {timeframe} | Annualized: {summary['Annualized_Return_%']:+.2f}% | "
+          f"Sharpe: {summary['Sharpe_Ratio']:.2f} | Win Rate: {summary['Win_Rate_%']:.1f}%")
+
+    return summary
 
 
 def analyze_trades(
@@ -398,18 +443,39 @@ def analyze_trades(
 # =============================================================================
 async def main() -> None:
     tickers = load_tickers(TICKERS_FILE)
+    all_results = []
 
     for symbol in tickers:
-        print(f"\n{'#' * 60}")
-        print(f"Running backtests for {symbol} across {len(TIMEFRAMES)} timeframes")
-        print(f"{'#' * 60}")
+        print(f"\n{'='*80}")
+        print(f"STARTING FULL BACKTEST SUITE: {symbol}")
+        print(f"{'='*80}")
 
         for timeframe in TIMEFRAMES:
             try:
-                await run_backtest(symbol, timeframe)
-            except Exception as exc:  # pragma: no cover - runtime guard
+                result = await run_backtest(symbol, timeframe)
+                all_results.append(result)
+                await asyncio.sleep(2)
+            except Exception as exc:
                 logging.exception("Error on %s (%s): %s", symbol, timeframe, exc)
-            await asyncio.sleep(2)  # Be gentle with IBKR rate limits
+
+    # Final summary table
+    if all_results:
+        print(f"\n{'='*100}")
+        print("FINAL RESULTS — ALL TIMEFRAMES")
+        print(f"{'='*100}")
+        df_summary = pd.DataFrame(all_results)
+        df_summary = df_summary.sort_values("Annualized_Return_%", ascending=False)
+        print(df_summary[[
+            "Timeframe", "Total_Trades", "Win_Rate_%", "Annualized_Return_%",
+            "Sharpe_Ratio", "Max_Drawdown_%", "Max_Risk_Used_%", "Final_Equity_$"
+        ]].to_string(index=False, float_format="{:,.2f}".format))
+        print(f"{'='*100}")
+        print(f"BEST PERFORMER: {df_summary.iloc[0]['Timeframe']} → "
+              f"{df_summary.iloc[0]['Annualized_Return_%']:+.2f}% annualized")
+
+    print(f"\nALL FILES SAVED TO YOUR DESKTOP!")
+    print(f"→ martingale_summary_all_timeframes.csv")
+    print(f"→ Individual trade logs + equity curves")
 
 
 if __name__ == "__main__":

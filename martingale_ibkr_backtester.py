@@ -131,6 +131,8 @@ async def run_backtest(symbol: str, timeframe: str) -> pd.DataFrame:
 
     df = util.df(bars)
     df["date"] = pd.to_datetime(df["date"])
+    # ← CRITICAL: Make intraday index timezone-aware (UTC) to match daily EMA
+    df["date"] = df["date"].dt.tz_localize("UTC")
     df = df.set_index("date")
 
     # === FIXED EMA10 WITH PROPER DATETIMEINDEX ===

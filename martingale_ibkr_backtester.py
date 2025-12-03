@@ -14,6 +14,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
 from ib_insync import IB, Stock, util
+from live_trading import connect_ibkr   # ← Your live bot's connection function
 
 # --------------------------- CONFIG ---------------------------
 TICKERS_FILE = Path("tickers.txt")
@@ -84,43 +85,53 @@ def get_daily_ema10(ib: IB, contract: Stock, end_date: datetime) -> pd.DataFrame
 
 
 async def run_backtest(symbol: str, timeframe: str) -> pd.DataFrame:
-    print(f"\n{'=' * 60}")
-    print(
-        f"BACKTESTING: {symbol} | Timeframe: {timeframe} | Martingale Cap: {MARTINGALE_CAP_PCT}%"
-    )
-    print(f"{'=' * 60}")
+    print(f"\n{'=' * 70}")
+    print(f"BACKTESTING: {symbol} | {timeframe} | Martingale Cap: {MARTINGALE_CAP_PCT}%")
+    print(f"{'=' * 70}")
 
-    ib = IB()
-    await ib.connectAsync("127.0.0.1", 7497, clientId=99)  # TWS or IB Gateway (paper: 7497, live: 7496)
+    # === RE-USE YOUR LIVE BOT'S CONNECTION (SAFE + CLEAN) ===
+    ib = connect_ibkr(max_retries=3, initial_client_id=300)  # Safe client ID
+    if ib is None or not ib.isConnected():
+        print(f"IBKR connection failed for {symbol} {timeframe} — skipping")
+        return pd.DataFrame()
 
     contract = Stock(symbol, "SMART", "USD")
     ib.qualifyContracts(contract)
 
-    # Download intraday data
+    # Download price data
     end_dt = datetime.now()
     bars = ib.reqHistoricalData(
         contract,
         endDateTime=end_dt,
-        durationStr="365 D",
+        durationStr="730 D" if timeframe == "1 day" else "365 D",
         barSizeSetting=timeframe,
         whatToShow="TRADES",
         useRTH=True,
         formatDate=1,
     )
-    df = util.df(bars)
-    if df.empty:
-        print("No data received!")
-        ib.disconnect()
+
+    # === DISCONNECT AFTER DOWNLOAD ===
+    ib.disconnect()
+    if not bars:
+        print("No data from IBKR")
         return pd.DataFrame()
 
+    df = util.df(bars)
     df["date"] = pd.to_datetime(df["date"])
     df = df.set_index("date")
 
-    # Get true daily EMA10 (non-repainting)
-    daily_df = get_daily_ema10(ib, contract, end_dt)
-    daily_ema = daily_df["ema10"].resample("1min").ffill().reindex(df.index, method="nearest")
-
-    df["ema10"] = daily_ema
+    # === Get true daily EMA10 (re-use connection safely) ===
+    ib = connect_ibkr(max_retries=1, initial_client_id=310)
+    if ib and ib.isConnected():
+        try:
+            daily_ema = get_daily_ema10(ib, contract, end_dt)
+            ema_resampled = daily_ema.resample("1min").ffill().reindex(df.index, method="nearest")
+            df["ema10"] = ema_resampled
+        finally:
+            ib.disconnect()
+    else:
+        print("Warning: Could not fetch daily EMA10 — using NaN")
+        df["ema10"] = np.nan
 
     # Strategy logic
     df["prev_close"] = df["close"].shift(1)
@@ -338,3 +349,6 @@ async def main() -> None:
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+# Use higher client IDs to never conflict with live bot
+CLIENT_ID_BASE = 300

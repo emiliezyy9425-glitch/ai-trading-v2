@@ -240,8 +240,11 @@ async def run_backtest(symbol: str, timeframe: str) -> pd.DataFrame:
     # Save detailed log
     log_df = pd.DataFrame(trade_log)
     filename = f"martingale_{symbol}_{timeframe.replace(' ', '')}_results.csv"
-    log_df.to_csv(filename, index=False)
-    print(f"Detailed trades saved → {filename}\n")
+    desktop_dir = Path.home() / "Desktop"
+    desktop_dir.mkdir(parents=True, exist_ok=True)
+    log_path = desktop_dir / filename
+    log_df.to_csv(log_path, index=False)
+    print(f"Detailed trades saved → {log_path}\n")
 
     if not log_df.empty:
         print(f"\nRunning detailed analysis for {symbol} | {timeframe}...")

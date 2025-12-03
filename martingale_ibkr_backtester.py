@@ -120,17 +120,31 @@ async def run_backtest(symbol: str, timeframe: str) -> pd.DataFrame:
     df["date"] = pd.to_datetime(df["date"])
     df = df.set_index("date")
 
-    # === Get true daily EMA10 (re-use connection safely) ===
-    ib = connect_ibkr(max_retries=1, initial_client_id=310)
-    if ib and ib.isConnected():
+    # === FIXED EMA10 WITH PROPER DATETIMEINDEX ===
+    ib_daily = connect_ibkr(max_retries=1, initial_client_id=310)
+    if ib_daily and ib_daily.isConnected():
         try:
-            daily_ema = get_daily_ema10(ib, contract, end_dt)
+            bars_daily = ib_daily.reqHistoricalData(
+                contract,
+                endDateTime=end_dt,
+                durationStr="2 Y",
+                barSizeSetting="1 day",
+                whatToShow="MIDPOINT",
+                useRTH=True,
+                formatDate=1,
+            )
+            daily_df = util.df(bars_daily)
+            daily_df["date"] = pd.to_datetime(daily_df["date"]).dt.tz_localize("UTC")
+            daily_df = daily_df.set_index("date")
+            daily_df["ema10"] = daily_df["close"].ewm(span=10, adjust=False).mean()
+            daily_ema = daily_df["ema10"]
+
             ema_resampled = daily_ema.resample("1min").ffill().reindex(df.index, method="nearest")
             df["ema10"] = ema_resampled
+
         finally:
-            ib.disconnect()
+            ib_daily.disconnect()
     else:
-        print("Warning: Could not fetch daily EMA10 — using NaN")
         df["ema10"] = np.nan
 
     # Strategy logic

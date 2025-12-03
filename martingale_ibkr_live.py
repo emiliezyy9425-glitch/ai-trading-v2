@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 import pandas as pd
-from ib_insync import IB, MarketOrder, Stock, util
+from ib_insync import IB, MarketOrder, Stock, Trade, util
 
 from live_trading import connect_ibkr
 from martingale_ibkr_backtester import (
@@ -53,6 +53,10 @@ DURATION_MAP = {
     "4 hours": "2 Y",
     "1 day": "3 Y",
 }
+
+# Restrict live trading to higher timeframes (exclude sub-30m intervals)
+EXCLUDED_TIMEFRAMES = {"1 min", "2 mins", "3 mins", "5 mins", "15 mins"}
+LIVE_TIMEFRAMES = [tf for tf in TIMEFRAMES if tf not in EXCLUDED_TIMEFRAMES]
 
 
 # --------------------------- Persistence ---------------------------
@@ -141,6 +145,21 @@ def fetch_daily_ema(ib: IB, contract: Stock) -> pd.Series:
     return daily_df["close"].ewm(span=10, adjust=False).mean()
 
 
+def timeframe_to_timedelta(timeframe: str) -> pd.Timedelta:
+    mapping = {
+        "1 min": pd.Timedelta(minutes=1),
+        "2 mins": pd.Timedelta(minutes=2),
+        "3 mins": pd.Timedelta(minutes=3),
+        "5 mins": pd.Timedelta(minutes=5),
+        "15 mins": pd.Timedelta(minutes=15),
+        "30 mins": pd.Timedelta(minutes=30),
+        "1 hour": pd.Timedelta(hours=1),
+        "4 hours": pd.Timedelta(hours=4),
+        "1 day": pd.Timedelta(days=1),
+    }
+    return mapping.get(timeframe, pd.Timedelta(minutes=1))
+
+
 # --------------------------- Trading logic ---------------------------
 def compute_signals(df: pd.DataFrame, ema10: pd.Series) -> pd.DataFrame:
     if df.empty:
@@ -189,7 +208,6 @@ def execute_strategy_for_symbol(ib: IB, symbol: str, timeframe: str, state: Dict
 
     df = compute_signals(intraday, ema10)
     latest = df.iloc[-1]
-    previous = df.iloc[-2]
 
     # Open/close logic mirrors the backtester: exit on opposite signal, then consider new entries
     position = state[key].get("position", 0)
@@ -204,13 +222,15 @@ def execute_strategy_for_symbol(ib: IB, symbol: str, timeframe: str, state: Dict
 
     if position != 0 and ((position == 1 and latest.sell_signal) or (position == -1 and latest.buy_signal)):
         exit_price = float(latest["open"])
-        pnl = position * (exit_price - entry_price) * shares
+        action = "SELL" if position == 1 else "BUY"
+        trade = place_market_order(ib, contract, action, abs(shares))
+        ib.sleep(1)
+        actual_exit = trade.fills[-1].execution.price if trade.fills else exit_price
+        pnl = position * (actual_exit - entry_price) * shares
         commission = shares * 2 * COMMISSION_PER_SHARE
         pnl -= commission
         win = pnl > 0
         risk_pct = update_risk(win)
-        action = "SELL" if position == 1 else "BUY"
-        place_market_order(ib, contract, action, abs(shares))
 
         log_trade(
             {
@@ -221,7 +241,7 @@ def execute_strategy_for_symbol(ib: IB, symbol: str, timeframe: str, state: Dict
                 "action": action,
                 "shares": shares,
                 "entry": entry_price,
-                "exit": exit_price,
+                "exit": actual_exit,
                 "pnl": round(pnl, 2),
                 "equity": round(equity + pnl, 2),
                 "risk_pct": risk_pct,
@@ -229,31 +249,47 @@ def execute_strategy_for_symbol(ib: IB, symbol: str, timeframe: str, state: Dict
             }
         )
 
-        state[key] = {"risk_pct": risk_pct, "position": 0}
-        logging.info("Exited %s %s | PnL: %.2f | Risk now %.1f%%", symbol, timeframe, pnl, risk_pct)
+        state[key] = {
+            "risk_pct": risk_pct,
+            "position": 0,
+            "last_entry_bar": state[key].get("last_entry_bar"),
+        }
+        logging.info(
+            "Exited %s %s | PnL: %.2f | Exit fill: %.4f | Risk now %.1f%%",
+            symbol,
+            timeframe,
+            pnl,
+            actual_exit,
+            risk_pct,
+        )
 
-    # If flat, consider new entry on the latest completed bar (previous row)
+    # If flat, consider new entry on the latest completed bar
     position = state[key].get("position", 0)
     risk_pct = float(state[key].get("risk_pct", RISK_RESET_PCT))
-    if position == 0:
-        if previous.buy_signal:
+    current_bar_time = latest.name.floor(timeframe_to_timedelta(timeframe))
+    last_entry_time = state[key].get("last_entry_bar")
+    if position == 0 and (last_entry_time != str(current_bar_time)):
+        if latest.buy_signal:
             action = "BUY"
             position = 1
-        elif previous.sell_signal:
+        elif latest.sell_signal:
             action = "SELL"
             position = -1
         else:
             return
 
         price = float(latest["open"])
-        shares = max(int(equity * (risk_pct / 100) / price), 1)
-        place_market_order(ib, contract, action, shares)
+        shares = max(int(round(equity * (risk_pct / 100) / price)), 1)
+        trade = place_market_order(ib, contract, action, shares)
+        ib.sleep(1)
+        actual_entry = trade.fills[-1].execution.price if trade.fills else price
 
         state[key] = {
             "risk_pct": risk_pct,
             "position": position,
-            "entry_price": price,
+            "entry_price": actual_entry,
             "shares": shares,
+            "last_entry_bar": str(current_bar_time),
         }
 
         log_trade(
@@ -264,18 +300,18 @@ def execute_strategy_for_symbol(ib: IB, symbol: str, timeframe: str, state: Dict
                 "type": "ENTRY",
                 "action": action,
                 "shares": shares,
-                "entry": price,
+                "entry": actual_entry,
                 "equity": round(equity, 2),
                 "risk_pct": risk_pct,
             }
         )
         logging.info(
-            "Entered %s on %s (%s) | Shares: %s | Entry: %.2f | Risk: %.1f%%",
+            "Entered %s on %s (%s) | Shares: %s | Entry fill: %.4f | Risk: %.1f%%",
             action,
             symbol,
             timeframe,
             shares,
-            price,
+            actual_entry,
             risk_pct,
         )
 
@@ -291,7 +327,7 @@ def main() -> None:
 
     try:
         for symbol in tickers:
-            for timeframe in TIMEFRAMES:
+            for timeframe in LIVE_TIMEFRAMES:
                 try:
                     execute_strategy_for_symbol(ib, symbol, timeframe, state)
                 except Exception:

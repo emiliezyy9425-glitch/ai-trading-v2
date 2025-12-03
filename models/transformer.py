@@ -50,17 +50,20 @@ class TransformerModel(nn.Module):
             dropout=dropout,
             activation="gelu",
             batch_first=True,
-            norm_first=True
+            norm_first=False
         )
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
 
         # Output head
         self.dropout = nn.Dropout(dropout)
         self.classifier = nn.Sequential(
-            nn.Linear(d_model, d_model // 2),
+            nn.Linear(d_model, 128),
             nn.GELU(),
-            nn.Dropout(0.1),
-            nn.Linear(d_model // 2, 1)
+            nn.Dropout(0.3),
+            nn.Linear(128, 64),
+            nn.GELU(),
+            nn.Dropout(0.3),
+            nn.Linear(64, 1)
         )
 
         self._init_weights()

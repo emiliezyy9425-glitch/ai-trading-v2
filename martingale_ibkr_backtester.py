@@ -103,7 +103,7 @@ async def run_backtest(symbol: str, timeframe: str) -> pd.DataFrame:
     bars = ib.reqHistoricalData(
         contract,
         endDateTime=end_dt,
-        durationStr="730 D" if timeframe == "1 day" else "365 D",
+        durationStr="2 Y" if timeframe == "1 day" else "365 D",
         barSizeSetting=timeframe,
         whatToShow="TRADES",
         useRTH=True,

@@ -48,14 +48,17 @@ class TransformerModel(nn.Module):
             dropout=0.15,
             activation="gelu",
             batch_first=True,
-            norm_first=True,
+            norm_first=False,
         )
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=3)
         self.classifier = nn.Sequential(
-            nn.Linear(d_model, 192),
+            nn.Linear(d_model, 128),
             nn.GELU(),
-            nn.Dropout(0.1),
-            nn.Linear(192, 1),
+            nn.Dropout(0.3),
+            nn.Linear(128, 64),
+            nn.GELU(),
+            nn.Dropout(0.3),
+            nn.Linear(64, 1),
         )
 
     def forward(self, x):

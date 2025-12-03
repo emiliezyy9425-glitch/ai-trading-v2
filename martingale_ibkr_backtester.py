@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -41,6 +42,10 @@ TIMEFRAMES = [
 # ----------------------------------------------------------------
 logging.basicConfig(level=logging.INFO)
 util.startLoop()
+
+PROJECT_ROOT = Path(os.getenv("PROJECT_ROOT", "/app"))
+DATA_DIR = PROJECT_ROOT / "data"
+BACKTEST_TRADE_LOG_PATH = DATA_DIR / "trade_log_backtest.csv"
 
 
 def load_tickers(path: Path) -> list[str]:
@@ -239,19 +244,22 @@ async def run_backtest(symbol: str, timeframe: str) -> pd.DataFrame:
         f"Max Risk Reached : {max(t['risk_percent'] for t in trade_log) if trade_log else 1}%"
     )
 
-    # === AUTO-SAVE TO YOUR DESKTOP (WORKS 100%) ===
+    # === AUTO-SAVE TRADE LOG (MIRRORS TSLA BACKTESTER) ===
     desktop = Path("/host_desktop")
+    target_dir = desktop if desktop.exists() else DATA_DIR
+    target_dir.mkdir(parents=True, exist_ok=True)
+
     safe_tf = timeframe.replace(" ", "").replace("hour", "h").replace("day", "d")
-    csv_file = f"martingale_{symbol}_{safe_tf}_trades.csv"
-    png_file = f"Equity_Curve_{symbol}_{safe_tf}.png"
+    csv_file = target_dir / "trade_log_backtest.csv"
+    png_file = target_dir / f"Equity_Curve_{symbol}_{safe_tf}.png"
 
     log_df = pd.DataFrame(trade_log)
-    if desktop.exists():
-        log_df.to_csv(desktop / csv_file, index=False)
-        print(f"SAVED TO DESKTOP: {csv_file}")
+    if not log_df.empty:
+        write_header = not csv_file.exists()
+        log_df.to_csv(csv_file, mode="a", index=False, header=write_header)
+        print(f"Trade log appended to: {csv_file}")
     else:
-        log_df.to_csv(csv_file, index=False)
-        print(f"Saved locally: {csv_file}")
+        print("No trades to log.")
 
     if not log_df.empty:
         eq = pd.Series([CAPITAL] + log_df["equity_after"].tolist())
@@ -260,11 +268,9 @@ async def run_backtest(symbol: str, timeframe: str) -> pd.DataFrame:
         plt.title(f"Equity Curve – {symbol} {timeframe}")
         plt.grid(True)
         plt.tight_layout()
-        if desktop.exists():
-            plt.savefig(desktop / png_file, dpi=200, bbox_inches="tight")
-            print(f"Chart saved to Desktop: {png_file}")
-        else:
-            plt.savefig(png_file, dpi=200, bbox_inches="tight")
+        plt.savefig(png_file, dpi=200, bbox_inches="tight")
+        location = "Desktop" if desktop.exists() else "data directory"
+        print(f"Chart saved to {location}: {png_file.name}")
         plt.close()
 
     return log_df

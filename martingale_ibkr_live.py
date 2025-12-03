@@ -35,6 +35,10 @@ from martingale_ibkr_backtester import (
 
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(message)s")
 
+# Override unsafe defaults from the backtester: cap martingale risk and set reset level
+MARTINGALE_CAP_PCT = 16.0
+RISK_RESET_PCT = 1.0
+
 PROJECT_ROOT = Path("/app")
 DATA_DIR = PROJECT_ROOT / "data"
 STATE_PATH = DATA_DIR / "martingale_live_state.json"

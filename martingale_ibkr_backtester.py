@@ -310,7 +310,9 @@ async def run_backtest(symbol: str, timeframe: str) -> pd.DataFrame:
     }
 
     # Append to master summary
-    summary_file = Path("/host_desktop/martingale_summary_all_timeframes.csv")
+    summary_dir = Path("/host_desktop") if Path("/host_desktop").exists() else DATA_DIR
+    summary_dir.mkdir(parents=True, exist_ok=True)
+    summary_file = summary_dir / "martingale_summary_all_timeframes.csv"
     file_exists = summary_file.exists()
 
     with open(summary_file, mode='a', newline='') as f:

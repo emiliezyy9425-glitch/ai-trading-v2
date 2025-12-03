@@ -10,6 +10,8 @@ __pycache__/
 # Logs and temporary data
 *.log
 *.txt
+# Track the shared ticker list used by IBKR backtests
+!tickers.txt
 
 # Docker and virtual environment files
 Dockerfile.*

@@ -73,7 +73,7 @@ def get_daily_ema10(ib: IB, contract: Stock, end_date: datetime) -> pd.DataFrame
     bars = ib.reqHistoricalData(
         contract,
         endDateTime=end_date,
-        durationStr="2 Y",
+        durationStr="3 Y",   # ← Must match 1-day duration
         barSizeSetting="1 day",
         whatToShow="MIDPOINT",
         useRTH=True,
@@ -110,7 +110,7 @@ async def run_backtest(symbol: str, timeframe: str) -> pd.DataFrame:
         "30 mins": "365 D",
         "1 hour": "365 D",
         "4 hours": "2 Y",
-        "1 day": "2 Y",
+        "1 day": "3 Y",   # ← CHANGED FROM "2 Y" → "3 Y"
     }
     durationStr = DURATION_MAP[timeframe]
     bars = ib.reqHistoricalData(
@@ -140,7 +140,7 @@ async def run_backtest(symbol: str, timeframe: str) -> pd.DataFrame:
             bars_daily = ib_daily.reqHistoricalData(
                 contract,
                 endDateTime=end_dt,
-                durationStr="2 Y",
+                durationStr="3 Y",   # ← Must match 1-day duration
                 barSizeSetting="1 day",
                 whatToShow="MIDPOINT",
                 useRTH=True,
@@ -237,25 +237,33 @@ async def run_backtest(symbol: str, timeframe: str) -> pd.DataFrame:
         f"Max Risk Reached : {max(t['risk_percent'] for t in trade_log) if trade_log else 1}%"
     )
 
-    # Save detailed log
+    # === AUTO-SAVE TO YOUR DESKTOP (WORKS 100%) ===
+    desktop = Path("/host_desktop")
+    safe_tf = timeframe.replace(" ", "").replace("hour", "h").replace("day", "d")
+    csv_file = f"martingale_{symbol}_{safe_tf}_trades.csv"
+    png_file = f"Equity_Curve_{symbol}_{safe_tf}.png"
+
     log_df = pd.DataFrame(trade_log)
-    filename = f"martingale_{symbol}_{timeframe.replace(' ', '')}_results.csv"
-    desktop_path = Path("/host_desktop")
-    if desktop_path.exists():
-        log_path = desktop_path / filename
-        log_df.to_csv(log_path, index=False)
-        print(f"→ SAVED TO DESKTOP: {log_path.name}")
+    if desktop.exists():
+        log_df.to_csv(desktop / csv_file, index=False)
+        print(f"SAVED TO DESKTOP: {csv_file}")
     else:
-        log_df.to_csv(filename, index=False)
-        print(f"→ Saved locally (no desktop link): {filename}")
+        log_df.to_csv(csv_file, index=False)
+        print(f"Saved locally: {csv_file}")
 
     if not log_df.empty:
-        print(f"\nRunning detailed analysis for {symbol} | {timeframe}...")
-        analyze_trades(
-            trade_log,
-            initial_capital=CAPITAL,
-            timeframe_name=f"{symbol}_{timeframe}",
-        )
+        eq = pd.Series([CAPITAL] + log_df["equity_after"].tolist())
+        plt.figure(figsize=(12, 6))
+        plt.plot(eq, color="green", linewidth=2)
+        plt.title(f"Equity Curve – {symbol} {timeframe}")
+        plt.grid(True)
+        plt.tight_layout()
+        if desktop.exists():
+            plt.savefig(desktop / png_file, dpi=200, bbox_inches="tight")
+            print(f"Chart saved to Desktop: {png_file}")
+        else:
+            plt.savefig(png_file, dpi=200, bbox_inches="tight")
+        plt.close()
 
     return log_df
 

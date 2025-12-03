@@ -11,6 +11,8 @@ from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
+import matplotlib.pyplot as plt
+import numpy as np
 from ib_insync import IB, Stock, util
 
 # --------------------------- CONFIG ---------------------------
@@ -203,6 +205,14 @@ async def run_backtest(symbol: str, timeframe: str) -> pd.DataFrame:
     log_df.to_csv(filename, index=False)
     print(f"Detailed trades saved → {filename}\n")
 
+    if not log_df.empty:
+        print(f"\nRunning detailed analysis for {symbol} | {timeframe}...")
+        analyze_trades(
+            trade_log,
+            initial_capital=CAPITAL,
+            timeframe_name=f"{symbol}_{timeframe}",
+        )
+
     return log_df
 
 
@@ -281,7 +291,7 @@ def analyze_trades(
     # ───── Plot & Save Equity Curve ─────
     plt.figure(figsize=(12, 6))
     plt.plot(
-        eq.index if hasattr(eq.index, "__len__") else range(len(eq)),
+        range(len(eq)),
         eq,
         linewidth=2,
         color="green",

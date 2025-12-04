@@ -159,31 +159,36 @@ def add_golden_price_features(
             "Skipping golden price feature generation; missing required columns: %s",
             missing_required,
         )
-        return df
+        return df.copy()
 
     def _process_group(group: pd.DataFrame) -> pd.DataFrame:
         local = group.copy()
 
-        if "timestamp" in local.columns:
-            local["timestamp"] = pd.to_datetime(
-                local["timestamp"], utc=True, errors="coerce"
-            )
-            local = local.dropna(subset=["timestamp"]).sort_values("timestamp")
+        has_ts_column = "timestamp" in local.columns
+        is_ts_index = local.index.name == "timestamp"
+
+        if is_ts_index and has_ts_column:
+            local = local.drop(columns=["timestamp"])
+        elif not is_ts_index and has_ts_column:
+            local["timestamp"] = pd.to_datetime(local["timestamp"], utc=True, errors="coerce")
+            local = local.dropna(subset=["timestamp"])
             local = local.set_index("timestamp")
-        elif isinstance(local.index, pd.DatetimeIndex):
-            local = local.sort_index()
+        elif is_ts_index and not has_ts_column:
+            pass
         else:
-            logger.warning(
-                "Unable to compute golden price features without a timestamp column or index."
-            )
-            return group
+            logger.warning("No timestamp found in group; skipping golden features.")
+            return local
+
+        if not isinstance(local.index, pd.DatetimeIndex):
+            logger.warning("Index is not DatetimeIndex after processing; skipping.")
+            return local
+
+        local = local.sort_index()
 
         local = local.asfreq("h")
 
         if group_key and group_key in local.columns:
             local[group_key] = group[group_key].iloc[0]
-
-        local = local.reset_index().rename(columns={"index": "timestamp"})
 
         local["ret_1h"] = np.log(local["price_1h"] / local["price_1h"].shift(1))
         local["ret_4h"] = np.log(local["price_1h"] / local["price_1h"].shift(4))

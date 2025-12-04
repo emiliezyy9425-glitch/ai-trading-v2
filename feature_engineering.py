@@ -357,68 +357,116 @@ def _get_mapped_features(df: pd.DataFrame, base_features: list[str], suffix: str
 
 
 def create_sequence(
-    df: pd.DataFrame,
+    df: pd.DataFrame | np.ndarray,
     idx: int,
     seq_len: int = 64,
     timeframes: Tuple[str, ...] = ("1h", "4h", "1d")
 ) -> np.ndarray:
     """
-    Create multi-timeframe sequence for LSTM/Transformer.
-    
+    创建多时间框架序列供 LSTM/Transformer/TCN 使用（完全修复 timestamp 冲突）
+
     Args:
-        df: DataFrame with 'timestamp' and multi-timeframe features
-        idx: Index in 1H data to center the sequence
-        seq_len: Length of output sequence
-        timeframes: Which timeframe features to include
-    
+        df: 可以是 pd.DataFrame（必须含 timestamp）或 np.ndarray（实时推理路径）
+        idx: 在 1H 数据中的目标位置（预测当前这根K）
+        seq_len: 序列长度（默认64）
+        timeframes: 要拼接的时间框架
+
     Returns:
-        (seq_len, total_features) array of type float32
+        (seq_len, n_features) 的 np.float32 数组
     """
-    from self_learn import FEATURE_NAMES_1H  # Base feature list (1h)
+    from self_learn import FEATURE_NAMES_1H  # 基础1H特征顺序（训练时用的）
 
-    df = _ensure_datetime_index(df)
+    # ====================== 第一步：统一转成干净的 DataFrame + UTC DatetimeIndex ======================
+    if isinstance(df, np.ndarray):
+        # 实时推理路径：模型只吐 array，我们自己造时间轴
+        if df.ndim != 2:
+            raise ValueError(f"ndarray must be 2D, got shape {df.shape}")
+        df = pd.DataFrame(df, columns=FEATURE_NAMES_1H)
+        fake_dates = pd.date_range("2020-01-01", periods=len(df), freq="1H", tz="UTC")
+        df.index = fake_dates
+        df.index.name = "timestamp"
+    else:
+        df = df.copy()
+
+        # 关键修复：坚决杜绝 timestamp 既是列又是index
+        if "timestamp" in df.columns and df.index.name == "timestamp":
+            df = df.drop(columns=["timestamp"])  # 删除列，保留index
+        elif "timestamp" in df.columns and df.index.name != "timestamp":
+            # 只有列 → 转为 index
+            df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
+            df = df.dropna(subset=["timestamp"])
+            df = df.set_index("timestamp")
+        elif "timestamp" not in df.columns and df.index.name != "timestamp":
+            # 完全没有时间信息 → 无法处理
+            raise ValueError("DataFrame 缺少 timestamp 列或 index，无法创建序列")
+
+        # 确保是 UTC DatetimeIndex 并排序
+        if df.index.tz is None:
+            df.index = df.index.tz_localize("UTC")
+        else:
+            df.index = df.index.tz_convert("UTC")
+        df = df.sort_index()
+
+    # ====================== 第二步：提取以 idx 为中心的 1H 窗口 ======================
     if idx >= len(df):
-        raise IndexError(f"idx {idx} out of bounds for df of length {len(df)}")
+        raise IndexError(f"idx {idx} 超出数据长度 {len(df)}")
 
-    # Extract 1h window
     start_idx = max(0, idx - seq_len + 1)
-    end_idx = idx + 1
-    seq_1h_raw = df.iloc[start_idx:end_idx]
+    window_1h = df.iloc[start_idx : idx + 1]  # 包含当前 bar
+
+    if len(window_1h) == 0:
+        raise ValueError("提取的1H窗口为空")
 
     sequences = []
     base_features = FEATURE_NAMES_1H
 
     for tf in timeframes:
         if tf == "1h":
-            rule = "1h"
-            feature_cols = [c for c in base_features if c in seq_1h_raw.columns]
-            df_tf = seq_1h_raw
+            df_tf = window_1h.copy()
+            feature_cols = [c for c in base_features if c in df_tf.columns]
+
         else:
-            rule = "4h" if tf == "4h" else "1D"
-            # Resample 1h → target timeframe
-            df_resampled = seq_1h_raw.resample(rule).last()
-            df_filled = df_resampled.asfreq(rule).ffill()  # Critical: preserve grid
-            df_tf = df_filled.tail(seq_len)
+            rule = "4H" if tf == "4h" else "1D"
+            # 重采样到目标周期，取最后一条（close值对齐）
+            resampled = window_1h.resample(rule).last()
 
-            # Map features: rsi_1h → rsi_4h, etc.
-            feature_cols = _get_mapped_features(df_tf, base_features, tf)
+            # 关键：用 asfreq + ffill 保证时间网格完整（否则会缺失行）
+            df_tf = resampled.asfreq(rule).ffill()
 
-        # Reindex to exact base feature order, fill missing with 0.0
-        seq_df = df_tf.reindex(columns=feature_cols)
-        seq_aligned = seq_df.reindex(columns=base_features, fill_value=0.0)
+            # 如果因为窗口太短导致完全没有数据，用 1h 最后一行填充（防止 crash）
+            if df_tf.empty or len(df_tf) == 0:
+                df_tf = window_1h.tail(1).copy()
+                # 制造一个假时间点对齐
+                fake_idx = pd.date_range(window_1h.index[-1], periods=1, freq=rule, tz="UTC")
+                df_tf.index = fake_idx
 
-        seq = seq_aligned.values.astype(np.float32)
+            # 特征名映射：rsi_1h → rsi_4h / rsi_1d
+            feature_cols = []
+            for f in base_features:
+                candidate = f.replace("_1h", f"_{tf}")
+                if candidate in df_tf.columns:
+                    feature_cols.append(candidate)
+                else:
+                    feature_cols.append(f)  # 退回到1h名称
 
-        # Final padding: repeat last row if too short
+        # 严格对齐到训练时的列顺序，缺失补0
+        seq_aligned = df_tf.reindex(columns=feature_cols)
+        seq_final = seq_aligned.reindex(columns=base_features, fill_value=0.0)
+
+        seq = seq_final.values.astype(np.float32)
+
+        # 长度不足时，用最后一行填充（极短新股常见）
         if len(seq) < seq_len:
-            pad_width = seq_len - len(seq)
+            pad_len = seq_len - len(seq)
             last_row = seq[-1:] if len(seq) > 0 else np.zeros((1, len(base_features)), dtype=np.float32)
-            pad = np.repeat(last_row, pad_width, axis=0)
+            pad = np.repeat(last_row, pad_len, axis=0)
             seq = np.vstack([seq, pad])
         else:
-            seq = seq[-seq_len:]
+            seq = seq[-seq_len:]  # 取最新的 seq_len 根
 
         sequences.append(seq)
 
-    # Stack all timeframes: (seq_len, sum_features_across_timeframes)
-    return np.concatenate(sequences, axis=1)
+    # 拼接所有时间框架：(seq_len, total_features)
+    final_sequence = np.concatenate(sequences, axis=1)
+
+    return final_sequence

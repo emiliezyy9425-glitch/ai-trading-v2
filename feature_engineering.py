@@ -285,35 +285,44 @@ def default_feature_values(feature_names: Sequence[str]) -> dict[str, float]:
 def sanitize_feature_row(
     feature_row: pd.Series, feature_names: Sequence[str]
 ) -> pd.Series:
-    """Return a copy of ``feature_row`` with non-finite values replaced.
+    """
+    铁血三连防御：任何进入模型的特征都不允许出现 NaN/inf。
 
-    Models expect fully numeric inputs. When upstream calculations surface
-    ``NaN``/``None`` (for example while IBKR streams are still warming up),
-    we defensively coerce values to floats and fall back to the established
-    default for that column. This helper is shared by both live trading and
-    the backtester to guarantee feature parity before inference.
+    专为 PPO 模型设计，强化防御：
+    1) 强制转换为 float，非有限值一律归零
+    2) 全量扫描 NaN/inf，记录日志并替换
+    3) PPO 最敏感特征使用安全默认值，避免“全零”毒瘤
     """
 
-    sanitized = feature_row.reindex(feature_names, fill_value=0.0).copy()
-    replaced: list[str] = []
+    sanitized = feature_row.reindex(feature_names).copy()
 
-    for col in feature_names:
-        value = sanitized[col]
-        if _is_finite(value):
-            sanitized[col] = float(value)
-            continue
+    # 第一步：强制转为 float，NaN/inf 直接变 0
+    sanitized = sanitized.astype(float, errors="ignore")
 
-        default_value = SPECIAL_NUMERIC_DEFAULTS.get(col, 0.0)
-        sanitized[col] = default_value
-        replaced.append(col)
+    # 第二步：替换所有非有限值（NaN, inf, -inf）
+    mask_bad = ~np.isfinite(sanitized)
+    if mask_bad.any():
+        bad_cols = sanitized[mask_bad].index.tolist()
+        logger.warning("PPO输入含 NaN/inf，已强制替换为0: %s", bad_cols)
+        sanitized[mask_bad] = 0.0
 
-    if replaced:
-        logger.warning(
-            "Replacing non-finite feature values with defaults: %s",
-            ", ".join(sorted(replaced)),
-        )
+    # 第三步：对 PPO 最敏感的几个特征做特殊默认值（而不是0）
+    ppo_critical_defaults = {
+        "rsi_1h": 50.0,
+        "macd_1h": 0.0,
+        "macd_signal_1h": 0.0,
+        "bb_position_1h": 0.5,
+        "price_z_120h": 0.0,
+        "atr_1h": 1.0,  # ATR=0 会导致波动率判断爆炸
+        "volume_1h": 100000,  # 避免除零
+        "sp500_above_20d": 50.0,
+    }
+    for col, default in ppo_critical_defaults.items():
+        if col in sanitized.index:
+            if not np.isfinite(sanitized[col]) or sanitized[col] == 0:
+                sanitized[col] = default
 
-    return sanitized
+    return sanitized.astype(np.float32)  # PPO 模型只吃 float32
 
 
 # ================================

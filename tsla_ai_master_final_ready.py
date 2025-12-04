@@ -3534,13 +3534,13 @@ def execute_stock_trade_ibkr(
     tickers continue to use a fixed ``100`` shares. The helper now enforces
     directional positioning:
     * ``"BUY"`` signals first cover any open short exposure before initiating a
-      new long position.
+    new long position.
     * ``"SELL"`` signals close existing long holdings before initiating or
       adding to short exposure.
     * If an open position is profitable, new orders in the same direction
       double the current holding.
-    * If an open position is at a loss, new orders in the same direction are
-      skipped.
+    * If an open position is at a loss, new orders in the same direction add to
+      the position using the standard sizing rules instead of being skipped.
     """
     if decision not in {"BUY", "SELL"}:
         return False
@@ -3578,17 +3578,6 @@ def execute_stock_trade_ibkr(
         else:
             profitable_position = price < avg_cost
             losing_position = price > avg_cost
-    if same_direction_as_position and losing_position:
-        logger.info(
-            "Skipping %s order for %s — existing position of %s shares is at a loss (avg %.2f vs. price %.2f).",
-            decision,
-            ticker,
-            pos_qty,
-            avg_cost,
-            price,
-        )
-        return False
-
     if same_direction_as_position and profitable_position:
         qty_equity = _calculate_pyramiding_quantity(abs(pos_qty), lot_size, price, net_liq)
         if qty_equity <= 0:
@@ -3603,6 +3592,24 @@ def execute_stock_trade_ibkr(
             ticker,
             qty_equity,
             abs(pos_qty),
+        )
+    elif same_direction_as_position and losing_position:
+        logger.info(
+            "📉 Averaging down %s position for %s — current %s shares at %.2f vs. price %.2f.",
+            "long" if pos_qty > 0 else "short",
+            ticker,
+            abs(pos_qty),
+            avg_cost,
+            price,
+        )
+        qty_equity, _ = _determine_position_size(
+            ticker,
+            price,
+            net_liq,
+            equity_fraction,
+            last_pnl,
+            last_size,
+            allow_loss_doubling=False,
         )
     elif ticker.isdigit():
         qty_equity = 100

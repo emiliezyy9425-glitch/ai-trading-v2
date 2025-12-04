@@ -243,8 +243,15 @@ async def run_backtest(symbol: str, timeframe: str) -> pd.DataFrame:
     desktop_path = Path("/host_desktop")
     if desktop_path.exists():
         log_path = desktop_path / filename
-        log_df.to_csv(log_path, index=False)
-        print(f"→ SAVED TO DESKTOP: {log_path.name}")
+        try:
+            log_df.to_csv(log_path, index=False)
+            print(f"→ SAVED TO DESKTOP: {log_path.name}")
+        except PermissionError:
+            log_df.to_csv(filename, index=False)
+            print(
+                "→ Desktop path exists but is not writable; saved locally instead:"
+                f" {filename}"
+            )
     else:
         log_df.to_csv(filename, index=False)
         print(f"→ Saved locally (no desktop link): {filename}")
@@ -349,8 +356,15 @@ def analyze_trades(
     desktop_path = Path("/host_desktop")
     if desktop_path.exists():
         chart_path = desktop_path / chart_filename
-        plt.savefig(chart_path, dpi=200, bbox_inches="tight")
-        print(f"→ Chart saved to Desktop: {chart_path.name}")
+        try:
+            plt.savefig(chart_path, dpi=200, bbox_inches="tight")
+            print(f"→ Chart saved to Desktop: {chart_path.name}")
+        except PermissionError:
+            plt.savefig(chart_filename, dpi=200, bbox_inches="tight")
+            print(
+                "→ Desktop path exists but is not writable; chart saved locally:"
+                f" {chart_filename}"
+            )
     else:
         plt.savefig(chart_filename, dpi=200, bbox_inches="tight")
         print(f"→ Chart saved locally: {chart_filename}")

@@ -267,10 +267,65 @@ def execute_strategy_for_symbol(ib: IB, symbol: str, timeframe: str, state: Dict
             risk_pct,
         )
 
+    current_bar_time = latest.name.floor(timeframe_to_timedelta(timeframe))
+
+    # If in a trade with floating loss, scale in once per bar in the same direction
+    position = state[key].get("position", 0)
+    entry_price = state[key].get("entry_price", 0.0)
+    shares = state[key].get("shares", 0)
+    last_add_bar = state[key].get("last_add_bar")
+    floating_pnl = position * (float(latest["close"]) - entry_price) * shares
+    if (
+        position != 0
+        and floating_pnl < 0
+        and last_add_bar != str(current_bar_time)
+    ):
+        action = "BUY" if position == 1 else "SELL"
+        add_shares = max(int(round(equity * (risk_pct / 100) / float(latest["open"]))), 1)
+        trade = place_market_order(ib, contract, action, add_shares)
+        ib.sleep(1)
+        actual_add_price = trade.fills[-1].execution.price if trade.fills else float(latest["open"])
+
+        new_total_shares = shares + add_shares
+        avg_entry = ((entry_price * shares) + (actual_add_price * add_shares)) / new_total_shares
+
+        state[key].update(
+            {
+                "entry_price": avg_entry,
+                "shares": new_total_shares,
+                "last_add_bar": str(current_bar_time),
+            }
+        )
+
+        log_trade(
+            {
+                "timestamp": latest.name,
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "type": "ADD",
+                "action": action,
+                "shares": add_shares,
+                "entry": actual_add_price,
+                "equity": round(equity, 2),
+                "risk_pct": risk_pct,
+                "position_shares": new_total_shares,
+            }
+        )
+
+        logging.info(
+            "Added to %s %s (%s) | Shares +%s -> %s | Fill: %.4f | Avg entry: %.4f",
+            action,
+            symbol,
+            timeframe,
+            add_shares,
+            new_total_shares,
+            actual_add_price,
+            avg_entry,
+        )
+
     # If flat, consider new entry on the latest completed bar
     position = state[key].get("position", 0)
     risk_pct = float(state[key].get("risk_pct", RISK_RESET_PCT))
-    current_bar_time = latest.name.floor(timeframe_to_timedelta(timeframe))
     last_entry_time = state[key].get("last_entry_bar")
     if position == 0 and (last_entry_time != str(current_bar_time)):
         if latest.buy_signal:

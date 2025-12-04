@@ -4999,8 +4999,16 @@ def process_single_ticker(
     trigger = info.get("trigger", "UNKNOWN")
     confidence = float(info.get("confidence", 0.0))
     ppo_action = info.get("ppo_action", 1)
+    ppo_value = info.get("ppo_value", 0.0)
+    ppo_entropy = info.get("ppo_entropy", 0.3)
 
-    if decision == "Hold":
+    # 终极熔断：如果 PPO 输出任何异常值，直接禁用加仓/强制平仓
+    if not np.isfinite(ppo_action) or not np.isfinite(ppo_value) or not np.isfinite(ppo_entropy):
+        logger.error("PPO 输出 NaN/inf！触发熔断，强制 HOLD 并记录")
+        decision = "Hold"
+        target_size = 0.0
+        info["reason"] = "PPO model output invalid (NaN/inf detected)"
+    elif decision == "Hold":
         target_size = 0.0
     else:
         # ---- Pyramiding logic (100% → 150% → 175%) ----

@@ -255,6 +255,58 @@ def predict_transformer(df: pd.DataFrame, seq_len: int = 120):
         prob = torch.sigmoid(transformer_model(X)).item()
     return np.array([prob]), np.array([1 if prob > 0.5 else 0])
 
+def safe_ppo_predict(ppo_model, feature_vector: np.ndarray) -> tuple[float, dict]:
+    """
+    带三重保险的 PPO 预测函数 —— 就算前面漏了，这里也能保命。
+    """
+    if feature_vector is None or len(feature_vector) == 0:
+        return 0.5, {"action": 1, "value": 0.0, "entropy": 0.3}
+
+    vec = np.array(feature_vector, dtype=np.float32).flatten()
+
+    # 保险1：检查 NaN/inf
+    if not np.all(np.isfinite(vec)):
+        logger.error("PPO 输入含 NaN/inf！特征向量已损坏，强制恢复中...")
+        vec = np.nan_to_num(vec, nan=0.0, posinf=0.0, neginf=0.0)
+
+    # 保险2：标准化到合理范围（PPO 训练时见过的数据分布）
+    vec = np.clip(vec, -10, 10)
+
+    # 保险3：如果还是全0（新股），强行注入中性信号
+    if np.all(vec == 0):
+        vec = vec.copy()
+        if vec.size > 0:
+            vec[0] = 50.0  # rsi
+        if vec.size > 1:
+            vec[1] = 0.0   # macd
+        if vec.size > 10:
+            vec[10] = 0.5  # bb_position
+
+    try:
+        obs = torch.from_numpy(vec).unsqueeze(0)
+        with torch.no_grad():
+            action, _ = ppo_model.predict(obs, deterministic=False)
+            dist = ppo_model.policy.get_distribution(obs)
+            entropy = float(dist.entropy().item()) if dist is not None else 0.3
+            value = float(ppo_model.policy.predict_values(obs).item())
+            probs = (
+                dist.distribution.probs.detach().cpu().numpy().squeeze()
+                if dist is not None and hasattr(dist.distribution, "probs")
+                else None
+            )
+            if probs is None or len(probs) == 0:
+                probs = np.zeros(3, dtype=np.float32)
+                probs[int(action)] = 1.0
+    except Exception as e:
+        logger.error(f"PPO 模型推理崩溃: {e}")
+        return 0.5, {"action": 1, "value": 0.0, "entropy": 0.3}
+
+    return float(probs[2]) if len(probs) > 2 else 0.5, {
+        "action": int(action),
+        "value": value,
+        "entropy": entropy,
+    }
+
 def predict_ppo(df: pd.DataFrame, seq_len: int = 60):
     path = _find("updated_ppo_latest.zip, ppo_trader.zip, ppo_*.zip")
     if not path: return np.array([0.6]), np.array([1]), {}
@@ -269,20 +321,21 @@ def predict_ppo(df: pd.DataFrame, seq_len: int = 60):
 
     action_conf = 0.6
     entropy = 0.5
-    try:
-        with torch.no_grad():
-            for ob in obs:
-                ob_t = torch.tensor(ob).unsqueeze(0)
-                action, _ = model.predict(ob_t, deterministic=False)
-                dist = model.policy.get_distribution(ob_t)
-                entropy = dist.entropy().item()
-                action_conf = 0.92 if int(action) == 2 else 0.60
-    except: pass
+    value = 0.0
+    last_action = 1
+
+    for ob in obs:
+        conf, meta = safe_ppo_predict(model, ob)
+        action_conf = max(action_conf, 0.92 if meta.get("action", 1) == 2 else 0.60)
+        entropy = meta.get("entropy", entropy)
+        value = meta.get("value", value)
+        last_action = meta.get("action", last_action)
 
     conf = min(0.999, action_conf + max(0, 0.4 - entropy))
-    return np.array([conf]), np.array([int(action) if 'action' in locals() else 1]), {
-        "action": int(action) if 'action' in locals() else 1,
+    return np.array([conf]), np.array([last_action]), {
+        "action": last_action,
         "entropy": entropy,
+        "value": value,
     }
 
 def predict_rf(df): return _tree_predict(df, "rf_latest.joblib, rf_best.joblib")

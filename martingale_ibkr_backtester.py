@@ -146,25 +146,26 @@ async def run_backtest(symbol: str, timeframe: str) -> pd.DataFrame:
             rolling_volume = daily_df["volume"].rolling(window=21).sum()
             daily_df["vwma21"] = rolling_pv / rolling_volume
 
-            latest_daily_date = daily_df.index[-1].normalize()
-            if pd.Timestamp.now(tz="UTC").date() > latest_daily_date.date():
-                current_indicator = daily_df["vwma21"].iloc[-1]
-            else:
-                current_indicator = daily_df["vwma21"].iloc[-2]
+            # === CORRECT: Only previous completed day's VWMA21 ===
+            daily_vwma = daily_df["vwma21"].copy()
+            # Resample to one value per day + shift → today only sees YESTERDAY's value
+            daily_vwma = daily_vwma.resample("1D").last().shift(1)
 
-            df["vwma21"] = current_indicator
+            # Forward-fill into intraday dataframe
+            df["vwma21"] = daily_vwma.reindex(df.index, method="ffill")
+            df["prev_vwma"] = daily_vwma.shift(1).reindex(df.index, method="ffill")
 
         finally:
             ib_daily.disconnect()
     else:
         df["vwma21"] = np.nan
+        df["prev_vwma"] = np.nan
 
     # Strategy logic
     df["prev_close"] = df["close"].shift(1)
-    df["prev_vwma"] = df["vwma21"].shift(1)
 
-    df["buy_signal"] = (df["prev_close"] < df["prev_vwma"]) & (df["close"] > df["vwma21"])
-    df["sell_signal"] = (df["prev_close"] > df["prev_vwma"]) & (df["close"] < df["vwma21"])
+    df["buy_signal"] = (df["close"].shift(1) <= df["prev_vwma"]) & (df["close"] > df["vwma21"])
+    df["sell_signal"] = (df["close"].shift(1) >= df["prev_vwma"]) & (df["close"] < df["vwma21"])
 
     # Backtest variables
     equity = CAPITAL

@@ -166,7 +166,9 @@ from ml_predictor import predict_with_all_models, ultimate_decision
 
 # These are required by the main script — ml_predictor now defines them again
 MODEL_NAMES = ("LSTM", "Transformer", "TCN")
-MODEL_DECISION_COLUMNS = tuple(f"{name}_decision" for name in MODEL_NAMES)
+TREE_MODEL_NAMES = ("RandomForest", "XGBoost", "LightGBM")
+LOGGED_MODEL_NAMES = TREE_MODEL_NAMES + MODEL_NAMES
+MODEL_DECISION_COLUMNS = tuple(f"{name}_decision" for name in LOGGED_MODEL_NAMES)
 from indicators import (
     calculate_rsi,
     calculate_macd,
@@ -825,7 +827,7 @@ MODEL_DECISION_LOG_COLUMNS = [
     "trigger_model",
     "trigger_confidence",
 ]
-for name in MODEL_NAMES:
+for name in LOGGED_MODEL_NAMES:
     MODEL_DECISION_LOG_COLUMNS.extend(
         [f"{name}_vote", f"{name}_confidence"]
     )
@@ -1235,7 +1237,7 @@ def _format_model_decisions(detail: Mapping[str, object] | None) -> Dict[str, st
             votes = raw_votes
 
     formatted: Dict[str, str] = {}
-    for name in MODEL_NAMES:
+    for name in LOGGED_MODEL_NAMES:
         column = f"{name}_decision"
         vote = votes.get(name)
         formatted[column] = str(vote).upper() if vote else "MISSING"
@@ -5041,7 +5043,7 @@ def process_single_ticker(
         else None,
     }
 
-    for name in MODEL_NAMES:
+    for name in LOGGED_MODEL_NAMES:
         decision_row[f"{name}_vote"] = detail_votes.get(name)
         decision_row[f"{name}_confidence"] = detail_confidences.get(name)
 

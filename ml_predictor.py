@@ -380,11 +380,11 @@ def predict_with_all_models(
     include_ppo: bool = True,
 ):
     scaler_path = _find("scaler.joblib, transformer_scaler.joblib")
-    df = sequence_df
+    df = apply_feature_aliases(sequence_df)
     if scaler_path:
         try:
             scaler = load(scaler_path)
-            X = sequence_df[FEATURE_NAMES].values
+            X = df[FEATURE_NAMES].values
             X_scaled = scaler.transform(X)
             df = pd.DataFrame(X_scaled, columns=FEATURE_NAMES, index=sequence_df.index)
         except Exception as e:
@@ -448,6 +448,38 @@ FEATURE_ALIASES = {
     "ret_4h.1": "ret_4h",
     "ret_24h.1": "ret_24h",
 }
+
+# Some historical feature-engineering pipelines emitted columns with a ``.1``
+# suffix (e.g., ``bb_position_1h.1``). Modern models use the suffix-free names,
+# so align any incoming frames by backfilling alias columns from their canonical
+# sources.
+def apply_feature_aliases(frame: pd.DataFrame) -> pd.DataFrame:
+    if frame is None or frame.empty:
+        return frame
+
+    aligned = frame.copy()
+    for alias, source in FEATURE_ALIASES.items():
+        alias_present = alias in aligned.columns
+        source_present = source in aligned.columns
+
+        if not alias_present and source_present:
+            aligned[alias] = aligned[source]
+            continue
+
+        if alias_present and not source_present:
+            aligned[source] = aligned[alias]
+            continue
+
+        if alias_present and source_present:
+            alias_fill = aligned[alias].isna() | (aligned[alias] == 0)
+            source_fill = aligned[source].isna() | (aligned[source] == 0)
+
+            if alias_fill.any():
+                aligned.loc[alias_fill, alias] = aligned.loc[alias_fill, source]
+            if source_fill.any():
+                aligned.loc[source_fill, source] = aligned.loc[source_fill, alias]
+
+    return aligned
 
 # 核确认（最强逻辑）
 def independent_model_decisions(ticker: str, feature_seq: np.ndarray, detail: dict):

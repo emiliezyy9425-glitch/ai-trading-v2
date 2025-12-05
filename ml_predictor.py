@@ -17,6 +17,9 @@ MODEL_DIR = Path("/app/models")
 transformer_model = None
 transformer_scaler = None
 tcn_model = None
+# Track how many input features the loaded TCN checkpoint expects so we can pad/trim
+# runtime inputs accordingly.
+tcn_feature_count = len(FEATURE_NAMES)
 
 OPTIMAL_CONF = {
     "lstm": 0.96,
@@ -163,17 +166,29 @@ class TCNGlobal(nn.Module):
 
 
 def load_global_models():
-    global transformer_model, transformer_scaler, tcn_model
+    global transformer_model, transformer_scaler, tcn_model, tcn_feature_count
 
     _load_transformer()
 
     tcn_path = MODEL_DIR / "tcn_global_best.pt"
     if tcn_path.exists():
         try:
-            tcn_model = TCNGlobal().to(device)
-            tcn_model.load_state_dict(torch.load(tcn_path, map_location=device))
+            state_dict = torch.load(tcn_path, map_location=device)
+            # Infer how many input channels the checkpoint was trained with to avoid
+            # Conv1d shape mismatches when FEATURE_NAMES changes.
+            first_conv_key = "network.0.conv1.weight"
+            if first_conv_key in state_dict:
+                tcn_feature_count = state_dict[first_conv_key].shape[1]
+            else:
+                tcn_feature_count = len(FEATURE_NAMES)
+
+            tcn_model = TCNGlobal(n_features=tcn_feature_count).to(device)
+            tcn_model.load_state_dict(state_dict)
             tcn_model.eval()
-            logger.info("GLOBAL TCN LOADED — THE EMPEROR HAS AWAKENED")
+            logger.info(
+                "GLOBAL TCN LOADED — THE EMPEROR HAS AWAKENED (features=%s)",
+                tcn_feature_count,
+            )
         except Exception as e:
             logger.error(f"TCN load failed: {e}")
 
@@ -190,6 +205,14 @@ def predict_tcn(df: pd.DataFrame, seq_len: int = 120):
     seq = pad_sequence_to_length(df[FEATURE_NAMES].fillna(0), target_len, FEATURE_NAMES)
     if len(seq) < target_len:
         return np.array([]), np.array([])
+
+    # The checkpoint may have been trained with a different feature width. Pad or
+    # trim the runtime input to match so Conv1d kernels load without shape errors.
+    feature_gap = tcn_feature_count - seq.shape[1]
+    if feature_gap > 0:
+        seq = np.pad(seq, ((0, 0), (0, feature_gap)), mode="constant")
+    elif feature_gap < 0:
+        seq = seq[:, :tcn_feature_count]
 
     X = torch.tensor(seq, dtype=torch.float32).unsqueeze(0).to(device)
     with torch.no_grad():

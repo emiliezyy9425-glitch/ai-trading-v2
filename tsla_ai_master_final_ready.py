@@ -5009,7 +5009,8 @@ def process_single_ticker(
         target_size = 0.0
         info["reason"] = "PPO model output invalid (NaN/inf detected)"
     elif decision == "Hold":
-        target_size = 0.0
+        # Do not forcefully flatten on HOLD; keep the current pyramided position
+        target_size = current_position
     else:
         # ---- Pyramiding logic (100% → 150% → 175%) ----
         if info.get("last_direction") != decision:

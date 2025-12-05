@@ -41,6 +41,7 @@ PROJECT_ROOT = os.getenv("PROJECT_ROOT", "/app")
 DATA_DIR = os.path.join(PROJECT_ROOT, "data")
 BACKTEST_TRADE_LOG_PATH = os.path.join(DATA_DIR, "trade_log_backtest.csv")
 FEATURE_SEQUENCE_WINDOW = 60
+TICKERS_FILE = os.getenv("TICKERS_FILE", "tickers.txt")
 
 REQUIRED_FEATURE_COLUMNS: tuple[str, ...] = (
     "bb_position_1h",
@@ -186,6 +187,26 @@ def _align_feature_row(
 
     aligned = aligned.reindex(REQUIRED_FEATURE_COLUMNS, fill_value=0.0)
     return sanitize_feature_row(aligned, REQUIRED_FEATURE_COLUMNS)
+
+
+def _load_tickers(path: str = TICKERS_FILE) -> list[str]:
+    file_path = Path(path)
+    if not file_path.exists():
+        logger.error("Tickers file not found: %s", file_path)
+        return []
+
+    tickers: list[str] = []
+    with file_path.open(encoding="utf-8") as f:
+        for line in f:
+            ticker = line.strip()
+            if not ticker or ticker.startswith("#"):
+                continue
+            tickers.append(ticker)
+
+    if not tickers:
+        logger.error("No tickers found in %s", file_path)
+
+    return tickers
 
 
 def run_backtest(
@@ -720,7 +741,11 @@ def run_backtest(
 
 def main():
     parser = argparse.ArgumentParser(description="Exact-match backtester")
-    parser.add_argument("--ticker", default="TSLA")
+    parser.add_argument(
+        "--ticker",
+        default=None,
+        help="Run a single ticker. If omitted, tickers are loaded from tickers.txt.",
+    )
     parser.add_argument("--start-date", default="2024-01-01")
     parser.add_argument("--end-date", default=None)
     parser.add_argument("--timeframe", default="1 hour", choices=["1 hour", "4 hours", "1 day"])
@@ -730,15 +755,28 @@ def main():
         default=None,
         help="Base IBKR client id to avoid conflicts (defaults to 200 or IBKR_BACKTEST_CLIENT_ID env).",
     )
+    parser.add_argument(
+        "--tickers-file",
+        default=TICKERS_FILE,
+        help="Path to ticker list file (one ticker per line). Ignored when --ticker is set.",
+    )
     args = parser.parse_args()
 
-    run_backtest(
-        ticker=args.ticker,
-        start_date=args.start_date,
-        end_date=args.end_date,
-        timeframe=args.timeframe,
-        client_id=args.client_id,
-    )
+    tickers = [args.ticker] if args.ticker else _load_tickers(args.tickers_file)
+
+    if not tickers:
+        logger.error("No tickers to backtest. Exiting.")
+        return
+
+    for ticker in tickers:
+        logger.info("Starting backtest for %s", ticker)
+        run_backtest(
+            ticker=ticker,
+            start_date=args.start_date,
+            end_date=args.end_date,
+            timeframe=args.timeframe,
+            client_id=args.client_id,
+        )
 
 
 if __name__ == "__main__":

@@ -20,9 +20,35 @@ from live_trading import connect_ibkr   # ← Your live bot's connection functio
 
 # --------------------------- CONFIG ---------------------------
 # Allow overriding the ticker list location so the backtester always uses the
-# caller's intended symbols (no hard-coded defaults).
+# caller's intended symbols (no hard-coded defaults). Prefer a Desktop-mounted
+# tickers.txt when present so users can manage their watchlist outside the
+# container.
 PROJECT_ROOT = Path(os.getenv("PROJECT_ROOT", "/app"))
-TICKERS_FILE = Path(os.getenv("TICKERS_FILE", PROJECT_ROOT / "tickers.txt"))
+HOST_DESKTOP = Path("/host_desktop")
+
+
+def resolve_tickers_file() -> Path:
+    """Return the ticker file path honoring env overrides and host desktop.
+
+    Precedence:
+    1) ``TICKERS_FILE`` environment variable
+    2) ``/host_desktop/tickers.txt`` (if the desktop is mounted into the
+       container)
+    3) ``<PROJECT_ROOT>/tickers.txt`` fallback
+    """
+
+    env_path = os.getenv("TICKERS_FILE")
+    if env_path:
+        return Path(env_path)
+
+    desktop_path = HOST_DESKTOP / "tickers.txt"
+    if desktop_path.exists():
+        return desktop_path
+
+    return PROJECT_ROOT / "tickers.txt"
+
+
+TICKERS_FILE = resolve_tickers_file()
 START_DATE = "20240101"  # 1+ year of data
 END_DATE = "20251231"
 CAPITAL = 500_000

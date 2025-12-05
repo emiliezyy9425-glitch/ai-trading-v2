@@ -29,6 +29,7 @@ from indicators import summarize_td_sequential
 from sp500_above_20d import load_sp500_above_20d_history
 from sp500_breadth import calculate_s5tw_history_ibkr_sync
 from feature_engineering import default_feature_values, sanitize_feature_row
+from tickers_cache import TICKERS_FILE_PATH, get_cached_tickers
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(
@@ -41,7 +42,7 @@ PROJECT_ROOT = os.getenv("PROJECT_ROOT", "/app")
 DATA_DIR = os.path.join(PROJECT_ROOT, "data")
 BACKTEST_TRADE_LOG_PATH = os.path.join(DATA_DIR, "trade_log_backtest.csv")
 FEATURE_SEQUENCE_WINDOW = 60
-TICKERS_FILE = os.getenv("TICKERS_FILE", "tickers.txt")
+TICKERS_FILE = TICKERS_FILE_PATH
 
 REQUIRED_FEATURE_COLUMNS: tuple[str, ...] = (
     "bb_position_1h",
@@ -191,6 +192,10 @@ def _align_feature_row(
 
 def _load_tickers(path: str = TICKERS_FILE) -> list[str]:
     file_path = Path(path)
+
+    if file_path.resolve() == Path(TICKERS_FILE_PATH).resolve():
+        return get_cached_tickers(force_refresh=True)
+
     if not file_path.exists():
         logger.error("Tickers file not found: %s", file_path)
         return []

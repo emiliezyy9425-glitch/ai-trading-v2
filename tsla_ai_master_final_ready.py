@@ -5253,15 +5253,19 @@ def is_us_equity_session_open(
 ) -> bool:
     """Return ``True`` when U.S. equities can trade (regular or extended)."""
 
-    now = (now or datetime.now(US_EASTERN)).astimezone(US_EASTERN)
+    now_et = (now or datetime.now(US_EASTERN)).astimezone(US_EASTERN)
 
-    if now.weekday() >= 5:
+    is_friday = now_et.weekday() == 4
+    is_saturday_or_sunday = now_et.weekday() >= 5
+
+    # Treat Friday post-market (until 20:00 ET) as open; fully close Sat/Sun
+    if is_saturday_or_sunday or (is_friday and now_et.hour >= 20):
         return False
 
-    if now.date() in US_MARKET_HOLIDAYS:
+    if now_et.date() in US_MARKET_HOLIDAYS:
         return False
 
-    session = _us_trading_session(now)
+    session = _us_trading_session(now_et)
     if include_extended:
         return session in {"pre-market", "regular", "post-market"}
 

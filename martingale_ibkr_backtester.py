@@ -8,7 +8,6 @@ from __future__ import annotations
 import asyncio
 import csv
 import logging
-import os
 from datetime import datetime
 from pathlib import Path
 
@@ -17,38 +16,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 from ib_insync import IB, Stock, util
 from live_trading import connect_ibkr   # ← Your live bot's connection function
+from project_paths import get_data_dir
+from tickers_cache import TICKERS_FILE_PATH, load_tickers
 
 # --------------------------- CONFIG ---------------------------
-# Allow overriding the ticker list location so the backtester always uses the
-# caller's intended symbols (no hard-coded defaults). Prefer a Desktop-mounted
-# tickers.txt when present so users can manage their watchlist outside the
-# container.
-PROJECT_ROOT = Path(os.getenv("PROJECT_ROOT", "/app"))
-HOST_DESKTOP = Path("/host_desktop")
-
-
-def resolve_tickers_file() -> Path:
-    """Return the ticker file path honoring env overrides and host desktop.
-
-    Precedence:
-    1) ``TICKERS_FILE`` environment variable
-    2) ``/host_desktop/tickers.txt`` (if the desktop is mounted into the
-       container)
-    3) ``<PROJECT_ROOT>/tickers.txt`` fallback
-    """
-
-    env_path = os.getenv("TICKERS_FILE")
-    if env_path:
-        return Path(env_path)
-
-    desktop_path = HOST_DESKTOP / "tickers.txt"
-    if desktop_path.exists():
-        return desktop_path
-
-    return PROJECT_ROOT / "tickers.txt"
-
-
-TICKERS_FILE = resolve_tickers_file()
 START_DATE = "20240101"  # 1+ year of data
 END_DATE = "20251231"
 CAPITAL = 500_000
@@ -72,32 +43,8 @@ TIMEFRAMES = [
 # ----------------------------------------------------------------
 logging.basicConfig(level=logging.INFO)
 util.startLoop()
-DATA_DIR = PROJECT_ROOT / "data"
+DATA_DIR = get_data_dir()
 BACKTEST_TRADE_LOG_PATH = DATA_DIR / "trade_log_backtest.csv"
-
-
-def load_tickers(path: Path) -> list[str]:
-    """Load ticker symbols from a text file (one per line).
-
-    Ignores blank lines and lines starting with '#'. Raises a helpful error if
-    the file is missing or empty.
-    """
-
-    if not path.exists():
-        raise FileNotFoundError(
-            f"Ticker list not found at {path.resolve()}. Please create tickers.txt with one symbol per line."
-        )
-
-    tickers = [
-        line.strip().upper()
-        for line in path.read_text().splitlines()
-        if line.strip() and not line.strip().startswith("#")
-    ]
-
-    if not tickers:
-        raise ValueError(f"No tickers found in {path}. Add at least one symbol to run the backtest.")
-
-    return tickers
 
 
 def get_daily_vwma21(ib: IB, contract: Stock, end_date: datetime) -> pd.DataFrame:
@@ -501,8 +448,10 @@ def analyze_trades(
 # RUN ALL TIMEFRAMES SEQUENTIALLY
 # =============================================================================
 async def main() -> None:
-    tickers = load_tickers(TICKERS_FILE)
-    print(f"Loaded {len(tickers)} tickers from {TICKERS_FILE.resolve()}: {', '.join(tickers)}")
+    tickers = load_tickers()
+    print(
+        f"Loaded {len(tickers)} tickers from {TICKERS_FILE_PATH.resolve()}: {', '.join(tickers)}"
+    )
     all_results = []
 
     for symbol in tickers:

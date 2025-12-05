@@ -190,20 +190,20 @@ async def run_backtest(symbol: str, timeframe: str) -> pd.DataFrame:
 
     # Backtest variables
     equity = CAPITAL
-    risk_pct = RISK_RESET_PCT
+    base_risk_pct = RISK_RESET_PCT
+    current_risk_multiplier = 1.0
     position = 0  # 1 = long, -1 = short, 0 = flat
     entry_price = 0.0
+    shares = 0
     trade_log: list[dict[str, float | int | bool | datetime | str]] = []
 
     for i in range(1, len(df)):
         row = df.iloc[i]
 
-        # Check for exit first (opposite signal)
+        # Exit on opposite signal
         if position != 0:
             if (position == 1 and row.sell_signal) or (position == -1 and row.buy_signal):
-                # Close position
                 exit_price = row["open"]  # Realistic: exit at next bar open
-                shares = abs(position) * (equity * (risk_pct / 100) / entry_price)
                 pnl = position * (exit_price - entry_price) * shares
                 commission = shares * 2 * COMMISSION_PER_SHARE
                 pnl -= commission
@@ -214,37 +214,64 @@ async def run_backtest(symbol: str, timeframe: str) -> pd.DataFrame:
                 trade_log.append(
                     {
                         "timestamp": row.name,
-                        "type": "LONG" if position > 0 else "SHORT",
+                        "type": "EXIT",
+                        "action": "SELL" if position > 0 else "BUY",
+                        "shares": shares,
                         "entry": entry_price,
                         "exit": exit_price,
-                        "shares": round(shares),
                         "pnl_dollar": round(pnl, 2),
                         "pnl_percent": round(pnl / (equity - pnl) * 100, 3),
-                        "risk_percent": risk_pct,
+                        "risk_percent": base_risk_pct * current_risk_multiplier,
                         "equity_after": round(equity, 2),
+                        "multiplier": current_risk_multiplier,
                         "win": win,
                     }
                 )
 
-                # Martingale update
-                risk_pct = RISK_RESET_PCT if win else min(risk_pct * 2, MARTINGALE_CAP_PCT)
+                if win:
+                    current_risk_multiplier = 1.0
+                else:
+                    current_risk_multiplier *= 2
+                    if current_risk_multiplier * base_risk_pct > MARTINGALE_CAP_PCT:
+                        current_risk_multiplier = MARTINGALE_CAP_PCT / base_risk_pct
 
-                position = 0  # flatten
+                position = 0
+                shares = 0
 
-        # New entry?
-        if position == 0:
+        # New entry
+        if position == 0 and not pd.isna(row.vwma21):
             if row.buy_signal:
                 position = 1
-                entry_price = row["open"]
             elif row.sell_signal:
                 position = -1
-                entry_price = row["open"]
+            else:
+                continue
+
+            entry_price = row["open"]
+            effective_risk_pct = base_risk_pct * current_risk_multiplier
+            shares = max(1, int(equity * effective_risk_pct / 100 / entry_price))
+
+            trade_log.append(
+                {
+                    "timestamp": row.name,
+                    "type": "ENTRY",
+                    "action": "BUY" if position > 0 else "SELL",
+                    "shares": shares,
+                    "entry": entry_price,
+                    "equity_after": round(equity, 2),
+                    "risk_percent": effective_risk_pct,
+                    "multiplier": current_risk_multiplier,
+                }
+            )
 
     ib.disconnect()
 
     # Final Results
-    total_trades = len(trade_log)
-    wins = sum(1 for t in trade_log if t["win"])
+    log_df = pd.DataFrame(trade_log)
+    trade_results = log_df[log_df["type"] == "EXIT"] if not log_df.empty else pd.DataFrame()
+
+    total_trades = len(trade_results)
+    wins = trade_results["win"].sum() if not trade_results.empty else 0
     win_rate = wins / total_trades * 100 if total_trades else 0
     final_equity = equity
     return_pct = (final_equity - CAPITAL) / CAPITAL * 100
@@ -267,7 +294,6 @@ async def run_backtest(symbol: str, timeframe: str) -> pd.DataFrame:
     csv_file = target_dir / "trade_log_backtest.csv"
     png_file = target_dir / f"Equity_Curve_{symbol}_{safe_tf}.png"
 
-    log_df = pd.DataFrame(trade_log)
     if not log_df.empty:
         write_header = not csv_file.exists()
         log_df.to_csv(csv_file, mode="a", index=False, header=write_header)
@@ -289,7 +315,7 @@ async def run_backtest(symbol: str, timeframe: str) -> pd.DataFrame:
         plt.close()
 
     # === MASTER SUMMARY LOG (ONE FILE FOR ALL TIMEFRAMES) ===
-    net_profit = log_df["pnl_dollar"].sum() if not log_df.empty else 0.0
+    net_profit = trade_results["pnl_dollar"].sum() if not trade_results.empty else 0.0
     total_return = (equity_curve.iloc[-1] - CAPITAL) / CAPITAL * 100
     rolling_max = equity_curve.cummax()
     drawdown = equity_curve - rolling_max

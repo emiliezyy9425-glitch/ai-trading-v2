@@ -44,7 +44,7 @@ TIMEFRAMES = [
 logging.basicConfig(level=logging.INFO)
 util.startLoop()
 DATA_DIR = get_data_dir()
-BACKTEST_TRADE_LOG_PATH = DATA_DIR / "trade_log_backtest.csv"
+BACKTEST_TRADE_LOG_PATH = DATA_DIR / "trade_log_backtest_EMA.csv"
 
 
 def get_daily_ema10(ib: IB, contract: Stock, end_date: datetime) -> pd.DataFrame:
@@ -269,7 +269,7 @@ async def run_backtest(symbol: str, timeframe: str) -> pd.DataFrame:
     target_dir.mkdir(parents=True, exist_ok=True)
 
     safe_tf = timeframe.replace(" ", "").replace("hour", "h").replace("day", "d")
-    csv_file = target_dir / "trade_log_backtest.csv"
+    csv_file = target_dir / BACKTEST_TRADE_LOG_PATH.name
     png_file = target_dir / f"Equity_Curve_{symbol}_{safe_tf}.png"
 
     if not log_df.empty:
@@ -482,6 +482,9 @@ async def main() -> None:
             "Timeframe", "Total_Trades", "Win_Rate_%", "Annualized_Return_%",
             "Sharpe_Ratio", "Max_Drawdown_%", "Max_Risk_Used_%", "Final_Equity_$"
         ]].to_string(index=False, float_format="{:,.2f}".format))
+        summary_path = DATA_DIR / "martingale_summary_EMA.csv"
+        pd.DataFrame(all_results).to_csv(summary_path, index=False)
+        print(f"Summary saved → {summary_path.name}")
         print(f"{'='*100}")
         print(f"BEST PERFORMER: {df_summary.iloc[0]['Timeframe']} → "
               f"{df_summary.iloc[0]['Annualized_Return_%']:+.2f}% annualized")

@@ -190,16 +190,24 @@ async def run_backtest(symbol: str, timeframe: str):
     dd = equity_curve / equity_curve.cummax() - 1
     max_dd_pct = dd.min() * 100
 
+    days = max(1, (df.index[-1] - df.index[0]).days)
+    total_return_ratio = final_equity / CAPITAL
+    annualized = (total_return_ratio ** (365 / days) - 1) * 100 if total_return_ratio > 0 else -100
+
     summary = {
         "Symbol": symbol,
         "Timeframe": timeframe,
+        "Start_Date": df.index[0].strftime("%Y-%m-%d"),
+        "End_Date": df.index[-1].strftime("%Y-%m-%d"),
+        "Duration_Days": days,
         "Total_Trades": total_trades,
         "Win_Rate_%": round(win_rate, 1),
         "Final_Equity_$": f"${final_equity:,.0f}",
         "Total_Return_%": round((final_equity/CAPITAL-1)*100, 2),
+        "Annualized_Return_%": round(annualized, 2),
         "Sharpe_Ratio": round(sharpe, 2),
         "Max_Drawdown_%": round(max_dd_pct, 2),
-        "Max_Risk_Used_%": round(log_df["risk_percent"].max(), 1) if not log_df.empty else 1,
+        "Max_Risk_Used_%": round(log_df["risk_percent"].max(), 1) if not log_df.empty else 1.0,
     }
 
     print(f"RESULT → {symbol:5} {timeframe:8} | Trades: {total_trades:3} | "

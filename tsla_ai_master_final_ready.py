@@ -5094,8 +5094,7 @@ def process_single_ticker(
     # FINAL SACRED RULE — NEVER OVERRIDE ml_predictor.py
     if decision == "Hold":
         logger.info(
-            "HOLD RESPECTED: %s",
-            decision_detail.get("reason", "High-confidence disagreement"),
+            f"Signal weakened (HOLD) → keeping full pyramided position for {ticker}"
         )
         return
 

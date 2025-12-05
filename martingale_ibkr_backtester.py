@@ -120,52 +120,45 @@ async def run_backtest(symbol: str, timeframe: str) -> pd.DataFrame:
     )
     df = df.set_index("date")
 
-    # === FIXED VWMA21 WITH PROPER DATETIMEINDEX ===
+    # Re-connect once to get clean daily data
     ib_daily = connect_ibkr(max_retries=1, initial_client_id=310)
     if ib_daily and ib_daily.isConnected():
         try:
-            bars_daily = ib_daily.reqHistoricalData(
+            # Get full daily dataframe
+            daily_bars = ib_daily.reqHistoricalData(
                 contract,
-                endDateTime=end_dt,
-                durationStr="3 Y",   # ← Must match 1-day duration
+                endDateTime="",
+                durationStr="3 Y",
                 barSizeSetting="1 day",
-                whatToShow="MIDPOINT",
+                whatToShow="TRADES",
                 useRTH=True,
-                formatDate=1,
+                formatDate=2,
             )
-            daily_df = util.df(bars_daily)
-            daily_dates = pd.to_datetime(daily_df["date"])
-            daily_df["date"] = (
-                daily_dates.dt.tz_localize("UTC")
-                if daily_dates.dt.tz is None
-                else daily_dates.dt.tz_convert("UTC")
-            )
+            daily_df = util.df(daily_bars)
+            daily_df["date"] = pd.to_datetime(daily_df["date"]).dt.tz_localize("UTC")
             daily_df = daily_df.set_index("date")
-            price_volume = daily_df["close"] * daily_df["volume"]
-            rolling_pv = price_volume.rolling(window=21).sum()
-            rolling_volume = daily_df["volume"].rolling(window=21).sum()
-            daily_df["vwma21"] = rolling_pv / rolling_volume
 
-            # === CORRECT: Only previous completed day's VWMA21 ===
-            daily_vwma = daily_df["vwma21"].copy()
-            # Resample to one value per day + shift → today only sees YESTERDAY's value
-            daily_vwma = daily_vwma.resample("1D").last().shift(1)
+            # Calculate true VWMA21
+            pv = daily_df["close"] * daily_df["volume"]
+            daily_df["vwma21"] = pv.rolling(21).sum() / daily_df["volume"].rolling(21).sum()
 
-            # Forward-fill into intraday dataframe
-            df["vwma21"] = daily_vwma.reindex(df.index, method="ffill")
-            df["prev_vwma"] = daily_vwma.shift(1).reindex(df.index, method="ffill")
+            # THIS IS THE ONLY LINE THAT MATTERS:
+            daily_vwma_series = daily_df["vwma21"].resample("1D").last().shift(1)  # Yesterday only!
 
+            # Forward-fill into intraday
+            df["vwma21"] = daily_vwma_series.reindex(df.index, method="ffill")
+            df["prev_vwma21"] = daily_vwma_series.shift(1).reindex(df.index, method="ffill")
         finally:
             ib_daily.disconnect()
     else:
         df["vwma21"] = np.nan
-        df["prev_vwma"] = np.nan
+        df["prev_vwma21"] = np.nan
 
     # Strategy logic
     df["prev_close"] = df["close"].shift(1)
 
-    df["buy_signal"] = (df["close"].shift(1) <= df["prev_vwma"]) & (df["close"] > df["vwma21"])
-    df["sell_signal"] = (df["close"].shift(1) >= df["prev_vwma"]) & (df["close"] < df["vwma21"])
+    df["buy_signal"] = (df["close"].shift(1) <= df["prev_vwma21"]) & (df["close"] > df["vwma21"])
+    df["sell_signal"] = (df["close"].shift(1) >= df["prev_vwma21"]) & (df["close"] < df["vwma21"])
 
     # Backtest variables
     equity = CAPITAL

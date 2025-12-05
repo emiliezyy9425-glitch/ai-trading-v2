@@ -373,7 +373,12 @@ def _tree_predict(df, names):
     prob = model.predict_proba(X)[0][1]
     return np.array([prob]), np.array([1 if prob > 0.5 else 0])
 
-def predict_with_all_models(sequence_df: pd.DataFrame, seq_len: int = 60):
+def predict_with_all_models(
+    sequence_df: pd.DataFrame,
+    seq_len: int = 60,
+    *,
+    include_ppo: bool = True,
+):
     scaler_path = _find("scaler.joblib, transformer_scaler.joblib")
     df = sequence_df
     if scaler_path:
@@ -421,15 +426,17 @@ def predict_with_all_models(sequence_df: pd.DataFrame, seq_len: int = 60):
     except Exception as e:
         logging.error(f"TCN failed: {e}")
 
-    try:
-        ppo_prob, ppo_act, ppo_meta = predict_ppo(df, seq_len)
-        preds["PPO"] = (ppo_prob, ppo_act)
-        logging.info(
-            f"PPO predicted | action={ppo_meta.get('action', 1)} entropy={ppo_meta.get('entropy', 0.5):.3f}"
-        )
-    except Exception as e:
-        logging.error(f"PPO failed: {e}")
-        ppo_meta = {}
+    ppo_meta: dict = {}
+    if include_ppo:
+        try:
+            ppo_prob, ppo_act, ppo_meta = predict_ppo(df, seq_len)
+            preds["PPO"] = (ppo_prob, ppo_act)
+            logging.info(
+                f"PPO predicted | action={ppo_meta.get('action', 1)} entropy={ppo_meta.get('entropy', 0.5):.3f}"
+            )
+        except Exception as e:
+            logging.error(f"PPO failed: {e}")
+            ppo_meta = {}
 
     return preds, ppo_meta
 

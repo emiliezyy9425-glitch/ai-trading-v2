@@ -442,11 +442,12 @@ def predict_with_all_models(
 
 # 向下兼容旧回测脚本
 FEATURE_ALIASES = {
-    "bb_position_1h.1": "bb_position_1h",
-    "price_z_120h.1": "price_z_120h",
-    "ret_1h.1": "ret_1h",
-    "ret_4h.1": "ret_4h",
-    "ret_24h.1": "ret_24h",
+    # Clean name → actual column in data
+    "bb_position_1h": "bb_position_1h.1",
+    "ret_24h": "ret_24h.1",
+    "ret_1h": "ret_1h.1",
+    "ret_4h": "ret_4h.1",
+    "price_z_120h": "price_z_120h.1",
 }
 
 # Some historical feature-engineering pipelines emitted columns with a ``.1``
@@ -458,26 +459,26 @@ def apply_feature_aliases(frame: pd.DataFrame) -> pd.DataFrame:
         return frame
 
     aligned = frame.copy()
-    for alias, source in FEATURE_ALIASES.items():
-        alias_present = alias in aligned.columns
-        source_present = source in aligned.columns
+    for clean_name, actual_column in FEATURE_ALIASES.items():
+        clean_present = clean_name in aligned.columns
+        actual_present = actual_column in aligned.columns
 
-        if not alias_present and source_present:
-            aligned[alias] = aligned[source]
+        if not clean_present and actual_present:
+            aligned[clean_name] = aligned[actual_column]
             continue
 
-        if alias_present and not source_present:
-            aligned[source] = aligned[alias]
+        if clean_present and not actual_present:
+            aligned[actual_column] = aligned[clean_name]
             continue
 
-        if alias_present and source_present:
-            alias_fill = aligned[alias].isna() | (aligned[alias] == 0)
-            source_fill = aligned[source].isna() | (aligned[source] == 0)
+        if clean_present and actual_present:
+            clean_fill = aligned[clean_name].isna() | (aligned[clean_name] == 0)
+            actual_fill = aligned[actual_column].isna() | (aligned[actual_column] == 0)
 
-            if alias_fill.any():
-                aligned.loc[alias_fill, alias] = aligned.loc[alias_fill, source]
-            if source_fill.any():
-                aligned.loc[source_fill, source] = aligned.loc[source_fill, alias]
+            if clean_fill.any():
+                aligned.loc[clean_fill, clean_name] = aligned.loc[clean_fill, actual_column]
+            if actual_fill.any():
+                aligned.loc[actual_fill, actual_column] = aligned.loc[actual_fill, clean_name]
 
     return aligned
 

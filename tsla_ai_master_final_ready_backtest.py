@@ -22,13 +22,14 @@ from tsla_ai_master_final_ready import build_feature_row, is_us_equity_session_o
 import ml_predictor
 from ml_predictor import (
     FEATURE_ALIASES,
+    FEATURE_NAMES,
     predict_with_all_models,
     ultimate_decision,
 )
 from indicators import summarize_td_sequential
 from sp500_above_20d import load_sp500_above_20d_history
 from sp500_breadth import calculate_s5tw_history_ibkr_sync
-from feature_engineering import default_feature_values, sanitize_feature_row
+from feature_engineering import default_feature_values
 from tickers_cache import TICKERS_FILE_PATH, get_cached_tickers
 
 logger = logging.getLogger(__name__)
@@ -44,78 +45,7 @@ BACKTEST_TRADE_LOG_PATH = os.path.join(DATA_DIR, "trade_log_backtest.csv")
 FEATURE_SEQUENCE_WINDOW = 60
 TICKERS_FILE = TICKERS_FILE_PATH
 
-REQUIRED_FEATURE_COLUMNS: tuple[str, ...] = (
-    "bb_position_1h",
-    "bb_position_1h.1",
-    "ret_24h",
-    "price_z_120h",
-    "ret_4h",
-    "ret_1h",
-    "adx_1h",
-    "adx_4h",
-    "ema10_change_1d",
-    "ema10_change_1h",
-    "ema10_change_4h",
-    "ema10_dev_1d",
-    "ema10_dev_1h",
-    "ema10_dev_4h",
-    "macd_1d",
-    "macd_1h",
-    "macd_4h",
-    "macd_change_1d",
-    "macd_change_1h",
-    "macd_change_4h",
-    "pattern_bearish_engulfing_1d",
-    "pattern_bearish_engulfing_1h",
-    "pattern_bearish_engulfing_4h",
-    "pattern_bullish_engulfing_1d",
-    "pattern_bullish_engulfing_1h",
-    "pattern_bullish_engulfing_4h",
-    "pattern_evening_star_1d",
-    "pattern_evening_star_1h",
-    "pattern_evening_star_4h",
-    "pattern_hammer_1d",
-    "pattern_hammer_1h",
-    "pattern_hammer_4h",
-    "pattern_marubozu_bear_1d",
-    "pattern_marubozu_bear_1h",
-    "pattern_marubozu_bear_4h",
-    "pattern_marubozu_bull_1d",
-    "pattern_marubozu_bull_1h",
-    "pattern_marubozu_bull_4h",
-    "pattern_morning_star_1d",
-    "pattern_morning_star_1h",
-    "pattern_morning_star_4h",
-    "pattern_shooting_star_1d",
-    "pattern_shooting_star_1h",
-    "pattern_shooting_star_4h",
-    "price_above_ema10_1d",
-    "price_above_ema10_1h",
-    "price_above_ema10_4h",
-    "price_z_120h.1",
-    "ret_1h.1",
-    "ret_24h.1",
-    "ret_4h.1",
-    "rsi_1h",
-    "rsi_4h",
-    "rsi_change_1h",
-    "signal_1d",
-    "signal_1h",
-    "signal_4h",
-    "sp500_above_20d",
-    "stoch_d_1d",
-    "stoch_d_1h",
-    "stoch_d_4h",
-    "stoch_k_1d",
-    "stoch_k_1h",
-    "stoch_k_4h",
-    "td9_1d",
-    "td9_1h",
-    "td9_4h",
-    "zig_1d",
-    "zig_1h",
-    "zig_4h",
-)
+REQUIRED_FEATURE_COLUMNS: tuple[str, ...] = tuple(FEATURE_NAMES)
 
 @dataclass
 class Position:
@@ -159,35 +89,6 @@ def write_trade_csv(row: dict):
             logger.info("Backtest trade log columns: %s", ", ".join(row.keys()))
             writer.writeheader()
         writer.writerow(row)
-
-
-def _align_feature_row(
-    raw_features: pd.Series, previous_features: pd.Series | None = None
-) -> pd.Series:
-    """Align a raw feature row to the exact schema with sensible fallbacks."""
-
-    defaults = default_feature_values(REQUIRED_FEATURE_COLUMNS)
-    aligned = pd.Series(defaults)
-
-    if previous_features is not None:
-        for col in REQUIRED_FEATURE_COLUMNS:
-            prev_val = previous_features.get(col)
-            if pd.notna(prev_val):
-                aligned[col] = prev_val
-
-    for key, value in raw_features.items():
-        aligned[key] = value
-
-    for alias, source in FEATURE_ALIASES.items():
-        if source not in aligned:
-            continue
-
-        alias_value = aligned.get(alias)
-        if alias not in aligned or pd.isna(alias_value) or alias_value == 0:
-            aligned[alias] = aligned[source]
-
-    aligned = aligned.reindex(REQUIRED_FEATURE_COLUMNS, fill_value=0.0)
-    return sanitize_feature_row(aligned, REQUIRED_FEATURE_COLUMNS)
 
 
 def _load_tickers(path: str = TICKERS_FILE) -> list[str]:
@@ -528,8 +429,9 @@ def run_backtest(
         raw_features = build_feature_row(
             indicators, price, iv, delta, sp500_pct, previous_features=previous_features
         )
-        aligned_features = _align_feature_row(raw_features, previous_features)
-        feature_history.append(aligned_features)
+        aligned = raw_features.rename(index=FEATURE_ALIASES)
+        final_features = aligned.reindex(FEATURE_NAMES, fill_value=0.0)
+        feature_history.append(final_features)
 
         sequence_df = pd.DataFrame(feature_history).reindex(
             columns=REQUIRED_FEATURE_COLUMNS, fill_value=0.0

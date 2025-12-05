@@ -642,18 +642,18 @@ def log_model_decision(
     detail_confidences = detail_map.get("confidences", {}) if isinstance(
         detail_map, Mapping
     ) else {}
+    confidence_parts = []
+    if isinstance(detail_confidences, Mapping):
+        for name in sorted(detail_confidences):
+            confidence_parts.append(f"{name}={float(detail_confidences.get(name, 0.0)):.6f}")
+    confidence_str = ",".join(confidence_parts) if confidence_parts else "none"
     trade_logger.info(
-        "decision|ticker=%s|decision=%s|confidence=%.6f|trigger=%s|confidences=LSTM=%.6f,Transformer=%.6f",
+        "decision|ticker=%s|decision=%s|confidence=%.6f|trigger=%s|confidences=%s",
         ticker,
         decision,
         float(detail_map.get("confidence", 0.0)) if isinstance(detail_map, Mapping) else 0.0,
         detail_map.get("trigger", "unknown") if isinstance(detail_map, Mapping) else "unknown",
-        detail_confidences.get("LSTM", 0.0)
-        if isinstance(detail_confidences, Mapping)
-        else 0.0,
-        detail_confidences.get("Transformer", 0.0)
-        if isinstance(detail_confidences, Mapping)
-        else 0.0,
+        confidence_str,
     )
 
 
@@ -4913,7 +4913,7 @@ def process_single_ticker(
 
     # --- PREDICTION & MODEL DECISIONS ---
     ticker_settings = _get_ticker_settings(ticker)
-    preds, ppo_meta = predict_with_all_models(sequence_df)
+    preds, _ = predict_with_all_models(sequence_df, include_ppo=False)
     current_position = get_position_size(ib, ticker)
 
     decision_log = "HOLD"
@@ -4922,9 +4922,7 @@ def process_single_ticker(
 
     # === FINAL LIVE DECISION LOGIC (MUST BE HERE) ===
     try:
-        decision_state, direction, reason = ml_predictor.ultimate_decision(
-            preds, ppo_meta
-        )
+        decision_state, direction, reason = ml_predictor.ultimate_decision(preds)
 
         info = {
             "reason": reason,
@@ -4932,30 +4930,25 @@ def process_single_ticker(
             "confidence": 0.0,
             "decision_state": decision_state,
             "direction": direction,
-            "ppo_action": ppo_meta.get("action", 1),
-            "ppo_value": ppo_meta.get("value", 0.0),
-            "ppo_value_ma100": ppo_meta.get("value_ma100", 0.0),
-            "ppo_value_std100": ppo_meta.get("value_std100", 0.5),
-            "ppo_entropy": ppo_meta.get("entropy", 0.3),
             "last_direction": direction,
             "consecutive_count": 0,
-            "prev_ppo_action": ppo_meta.get("prev_action", ppo_meta.get("action", 1)),
             "votes": {
                 k: ("Buy" if p[-1] > 0.5 else "Sell")
                 for k, (p, _) in preds.items()
-                if k != "PPO" and len(p)
+                if len(p)
             },
             "confidences": {
                 k: max(float(pr[-1]), 1 - float(pr[-1]))
                 for k, (pr, _) in preds.items()
-                if k != "PPO" and len(pr)
+                if len(pr)
             },
             "probabilities": {
                 k: float(pr[-1]) if len(pr) else 0.5
                 for k, (pr, _) in preds.items()
-                if k != "PPO"
             },
         }
+
+        info["confidence"] = max(info["confidences"].values(), default=0.0)
 
         # TCN — safe defaults using actual prediction probabilities
         tcn_prob = preds.get("TCN", (np.array([0.5]), np.array([0])))[0]
@@ -4963,18 +4956,6 @@ def process_single_ticker(
         info.setdefault("votes", {})["TCN"] = "Buy" if tcn_prob > 0.5 else "Sell"
         info.setdefault("confidences", {})["TCN"] = tcn_prob if tcn_prob > 0.5 else 1 - tcn_prob
         info.setdefault("probabilities", {})["TCN"] = tcn_prob
-
-        if "PPO" in preds:
-            ppo_prob, _ = preds.get("PPO", ([], []))
-            if len(ppo_prob):
-                info.setdefault("votes", {})["PPO"] = (
-                    "Buy" if ppo_prob[-1] > 0.5 else "Sell"
-                )
-                info.setdefault("confidences", {})["PPO"] = max(
-                    float(ppo_prob[-1]), 1 - float(ppo_prob[-1])
-                )
-                info.setdefault("probabilities", {})["PPO"] = float(ppo_prob[-1])
-                info["confidence"] = max(info["confidences"].values(), default=0.0)
 
         if decision_state == "EXECUTE":
             decision = direction
@@ -4998,17 +4979,7 @@ def process_single_ticker(
 
     trigger = info.get("trigger", "UNKNOWN")
     confidence = float(info.get("confidence", 0.0))
-    ppo_action = info.get("ppo_action", 1)
-    ppo_value = info.get("ppo_value", 0.0)
-    ppo_entropy = info.get("ppo_entropy", 0.3)
-
-    # 终极熔断：如果 PPO 输出任何异常值，直接禁用加仓/强制平仓
-    if not np.isfinite(ppo_action) or not np.isfinite(ppo_value) or not np.isfinite(ppo_entropy):
-        logger.error("PPO 输出 NaN/inf！触发熔断，强制 HOLD 并记录")
-        decision = "Hold"
-        target_size = 0.0
-        info["reason"] = "PPO model output invalid (NaN/inf detected)"
-    elif decision == "Hold":
+    if decision == "Hold":
         # Do not forcefully flatten on HOLD; keep the current pyramided position
         target_size = current_position
     else:
@@ -5018,32 +4989,11 @@ def process_single_ticker(
         else:
             consecutive = info.get("consecutive_count", 1) + 1
 
-        # PPO decides if we are allowed to be greedy
-        ppo_action = info.get("ppo_action", 1)
-        ppo_value = info.get("ppo_value", 0.0)
-        ppo_ma = info.get("ppo_value_ma100", 0.0)
-        ppo_std = info.get("ppo_value_std100", 0.5)
-        ppo_entropy = info.get("ppo_entropy", 0.3)
-
-        allow_pyramid = (
-            ppo_action == 2 and
-            ppo_value > ppo_ma + 0.5 * ppo_std and
-            ppo_entropy < 0.40
-        )
-
-        early_exit = (
-            ppo_action == 0 or
-            ppo_entropy > 0.60 or
-            (current_position != 0 and info.get("prev_ppo_action", 1) == 2 and ppo_action == 0)
-        )
-
-        if early_exit:
-            target_size = 0.0
-        elif consecutive == 1:
+        if consecutive == 1:
             target_size = 1.00
-        elif consecutive == 2 and allow_pyramid:
+        elif consecutive == 2:
             target_size = 1.50
-        elif consecutive == 3 and allow_pyramid:
+        elif consecutive == 3:
             target_size = 1.75
         else:
             target_size = current_position  # stay at 175% max
@@ -5054,7 +5004,6 @@ def process_single_ticker(
     # Store for next bar
     info["last_direction"] = decision
     info["consecutive_count"] = consecutive if decision != "Hold" else 0
-    info["prev_ppo_action"] = ppo_action
 
     decision_detail: dict[str, object] = info if isinstance(info, dict) else {}
     trigger = decision_detail.get("trigger") or "unknown"
@@ -5066,6 +5015,12 @@ def process_single_ticker(
     detail_confidences = decision_detail.get("confidences", {}) if isinstance(
         decision_detail, Mapping
     ) else {}
+
+    confidence_log = ", ".join(
+        f"{name}:{float(detail_confidences.get(name, 0.0)):.3f}"
+        for name in sorted(detail_confidences)
+    )
+    logger.info("Model confidences for %s → %s", ticker, confidence_log or "none")
 
     decision_row = {
         "timestamp": latest_timestamp.astimezone(timezone.utc).strftime(

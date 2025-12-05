@@ -1,5 +1,5 @@
 # =============================================================================
-# 10-Day EMA Reversion + Pure Martingale Backtester (IBKR Ready)
+# 21-Day VWMA (Close) Reversion + Pure Martingale Backtester (IBKR Ready)
 # Exact replica of your Pine Script – now in Python using ib_insync
 # =============================================================================
 
@@ -73,8 +73,8 @@ def load_tickers(path: Path) -> list[str]:
     return tickers
 
 
-def get_daily_ema10(ib: IB, contract: Stock, end_date: datetime) -> pd.DataFrame:
-    """Fetch daily bars and compute true non-repainting 10-period EMA."""
+def get_daily_vwma21(ib: IB, contract: Stock, end_date: datetime) -> pd.DataFrame:
+    """Fetch daily bars and compute a non-repainting 21-day VWMA on close price."""
 
     bars = ib.reqHistoricalData(
         contract,
@@ -86,8 +86,11 @@ def get_daily_ema10(ib: IB, contract: Stock, end_date: datetime) -> pd.DataFrame
         formatDate=1,
     )
     df = util.df(bars)
-    df["ema10"] = df["close"].ewm(span=10, adjust=False).mean()
-    return df[["date", "close", "ema10"]].set_index("date")
+    price_volume = df["close"] * df["volume"]
+    rolling_pv = price_volume.rolling(window=21).sum()
+    rolling_volume = df["volume"].rolling(window=21).sum()
+    df["vwma21"] = rolling_pv / rolling_volume
+    return df[["date", "close", "vwma21"]].set_index("date")
 
 
 async def run_backtest(symbol: str, timeframe: str) -> pd.DataFrame:
@@ -143,7 +146,7 @@ async def run_backtest(symbol: str, timeframe: str) -> pd.DataFrame:
     )
     df = df.set_index("date")
 
-    # === FIXED EMA10 WITH PROPER DATETIMEINDEX ===
+    # === FIXED VWMA21 WITH PROPER DATETIMEINDEX ===
     ib_daily = connect_ibkr(max_retries=1, initial_client_id=310)
     if ib_daily and ib_daily.isConnected():
         try:
@@ -164,23 +167,26 @@ async def run_backtest(symbol: str, timeframe: str) -> pd.DataFrame:
                 else daily_dates.dt.tz_convert("UTC")
             )
             daily_df = daily_df.set_index("date")
-            daily_df["ema10"] = daily_df["close"].ewm(span=10, adjust=False).mean()
-            daily_ema = daily_df["ema10"]
+            price_volume = daily_df["close"] * daily_df["volume"]
+            rolling_pv = price_volume.rolling(window=21).sum()
+            rolling_volume = daily_df["volume"].rolling(window=21).sum()
+            daily_df["vwma21"] = rolling_pv / rolling_volume
+            daily_vwma = daily_df["vwma21"]
 
-            ema_resampled = daily_ema.resample("1min").ffill().reindex(df.index, method="nearest")
-            df["ema10"] = ema_resampled
+            vwma_resampled = daily_vwma.resample("1min").ffill().reindex(df.index, method="nearest")
+            df["vwma21"] = vwma_resampled
 
         finally:
             ib_daily.disconnect()
     else:
-        df["ema10"] = np.nan
+        df["vwma21"] = np.nan
 
     # Strategy logic
     df["prev_close"] = df["close"].shift(1)
-    df["prev_ema"] = df["ema10"].shift(1)
+    df["prev_vwma"] = df["vwma21"].shift(1)
 
-    df["buy_signal"] = (df["prev_close"] < df["prev_ema"]) & (df["close"] > df["ema10"])
-    df["sell_signal"] = (df["prev_close"] > df["prev_ema"]) & (df["close"] < df["ema10"])
+    df["buy_signal"] = (df["prev_close"] < df["prev_vwma"]) & (df["close"] > df["vwma21"])
+    df["sell_signal"] = (df["prev_close"] > df["prev_vwma"]) & (df["close"] < df["vwma21"])
 
     # Backtest variables
     equity = CAPITAL

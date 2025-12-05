@@ -98,7 +98,7 @@ async def run_backtest(symbol: str, timeframe: str) -> pd.DataFrame:
         endDateTime=end_dt,
         durationStr=durationStr,
         barSizeSetting=timeframe,
-        whatToShow="TRADES",
+        whatToShow="MIDPOINT",
         useRTH=True,
         formatDate=1,
     )
@@ -144,17 +144,27 @@ async def run_backtest(symbol: str, timeframe: str) -> pd.DataFrame:
             ema_resampled = daily_ema.resample("1min").ffill().reindex(df.index, method="nearest")
             df["ema10"] = ema_resampled
 
+            # Normalize naming to match live bot + other backtesters
+            df["indicator"] = df["ema10"].ffill()
+            df["prev_indicator"] = df["indicator"].shift(1)
+
         finally:
             ib_daily.disconnect()
     else:
         df["ema10"] = np.nan
 
+    # Ensure indicator columns always exist for signal logic
+    if "indicator" not in df.columns:
+        df["indicator"] = df["ema10"].ffill()
+    if "prev_indicator" not in df.columns:
+        df["prev_indicator"] = df["indicator"].shift(1)
+
     # Strategy logic
     df["prev_close"] = df["close"].shift(1)
-    df["prev_ema"] = df["ema10"].shift(1)
+    df["prev_indicator"] = df["indicator"].shift(1) if "indicator" in df.columns else df["ema10"].shift(1)
 
-    df["buy_signal"] = (df["prev_close"] < df["prev_ema"]) & (df["close"] > df["ema10"])
-    df["sell_signal"] = (df["prev_close"] > df["prev_ema"]) & (df["close"] < df["ema10"])
+    df["buy_signal"] = (df["prev_close"] < df["prev_indicator"]) & (df["close"] > df["indicator"])
+    df["sell_signal"] = (df["prev_close"] > df["prev_indicator"]) & (df["close"] < df["indicator"])
 
     # Backtest variables
     equity = CAPITAL

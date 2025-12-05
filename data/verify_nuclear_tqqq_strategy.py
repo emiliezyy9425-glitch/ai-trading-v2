@@ -91,8 +91,8 @@ for _, row in df.iterrows():
             current_pos = 0
             continue
 
-        # Normal exit when signal flips or goes HOLD
-        if sig == "HOLD" or (sig == "Sell" and current_pos > 0) or (sig == "Buy" and current_pos < 0):
+        # ONLY exit on opposite signal or stop-loss — HOLD is now ignored
+        if (sig == "Sell" and current_pos > 0) or (sig == "Buy" and current_pos < 0):
             pnl_pct = current_pos * (price / entry_price - 1) * 100
             trades.append({"type": "EXIT_SIGNAL", "price": price, "time": row["timestamp"], "pnl_pct": pnl_pct, "pyramids": pyramid_count})
             current_pos = 0

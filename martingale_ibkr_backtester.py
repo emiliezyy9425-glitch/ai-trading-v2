@@ -145,10 +145,14 @@ async def run_backtest(symbol: str, timeframe: str) -> pd.DataFrame:
             rolling_pv = price_volume.rolling(window=21).sum()
             rolling_volume = daily_df["volume"].rolling(window=21).sum()
             daily_df["vwma21"] = rolling_pv / rolling_volume
-            daily_vwma = daily_df["vwma21"]
 
-            vwma_resampled = daily_vwma.resample("1min").ffill().reindex(df.index, method="nearest")
-            df["vwma21"] = vwma_resampled
+            latest_daily_date = daily_df.index[-1].normalize()
+            if pd.Timestamp.now(tz="UTC").date() > latest_daily_date.date():
+                current_indicator = daily_df["vwma21"].iloc[-1]
+            else:
+                current_indicator = daily_df["vwma21"].iloc[-2]
+
+            df["vwma21"] = current_indicator
 
         finally:
             ib_daily.disconnect()

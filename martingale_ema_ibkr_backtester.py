@@ -139,14 +139,18 @@ async def run_backtest(symbol: str, timeframe: str) -> pd.DataFrame:
             )
             daily_df = daily_df.set_index("date")
             daily_df["ema10"] = daily_df["close"].ewm(span=10, adjust=False).mean()
-            daily_ema = daily_df["ema10"]
 
-            ema_resampled = daily_ema.resample("1min").ffill().reindex(df.index, method="nearest")
-            df["ema10"] = ema_resampled
+            latest_daily_date = daily_df.index[-1].normalize()
+            if pd.Timestamp.now(tz="UTC").date() > latest_daily_date.date():
+                current_indicator = daily_df["ema10"].iloc[-1]
+            else:
+                current_indicator = daily_df["ema10"].iloc[-2]
+
+            df["ema10"] = current_indicator
 
             # Normalize naming to match live bot + other backtesters
-            df["indicator"] = df["ema10"].ffill()
-            df["prev_indicator"] = df["indicator"].shift(1)
+            df["indicator"] = current_indicator
+            df["prev_indicator"] = current_indicator
 
         finally:
             ib_daily.disconnect()

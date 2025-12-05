@@ -354,6 +354,7 @@ def run_backtest(
         s5tw_history = s5tw_history.sort_index()
 
     position: Position | None = None
+    peak_price: float | None = None
     equity_curve = []
     feature_history: deque[pd.Series] = live_trading.FEATURE_HISTORY[ticker]
 
@@ -478,6 +479,33 @@ def run_backtest(
         # ================================================
         if not np.isfinite(price):
             price = price_history[-1][1] if price_history else 100.0
+
+        if position is None:
+            peak_price = None
+
+        if position is not None:
+            if peak_price is None:
+                peak_price = position.entry_price
+
+            # Update peak price for trailing stop (runs every bar)
+            if position.direction > 0 and price > peak_price:
+                peak_price = price
+            if position.direction < 0 and price < peak_price:
+                peak_price = price
+
+            # 18% trailing stop — checked EVERY bar, even on HOLD
+            position_direction_was_long = position.direction > 0
+            drawdown = (peak_price - price) / peak_price if position.direction > 0 else (price - peak_price) / peak_price
+            if drawdown >= 0.18:
+                pnl_points = (price - position.entry_price) * position.direction
+                equity_curve.append(pnl_points)
+                result = "STOP_LOSS"
+                trade_size = position.size
+                position = None
+                peak_price = None
+                decision = "SELL" if position_direction_was_long else "BUY"
+                logger.info(f"TRAILING STOP HIT → {result} {trade_size}x at {price}")
+                continue  # skip rest of loop
         iv = indicators.get("iv", 50.0)
         delta = indicators.get("delta", 0.5)
         sp500_pct = indicators.get("sp500_above_20d", 50.0)
@@ -582,6 +610,7 @@ def run_backtest(
                     direction=expected_direction,
                     size=1
                 )
+                peak_price = price
                 trade_filled = True
                 trade_size = position.size
                 result = "ENTRY"
@@ -607,16 +636,18 @@ def run_backtest(
                         direction=expected_direction,
                         size=1
                     )
+                    peak_price = price
                     trade_filled = True
         else:
-            # No nuclear signal → close if in position
-            if position is not None:
-                pnl_points = (price - position.entry_price) * position.direction
-                equity_curve.append(pnl_points)
-                result = "WIN" if pnl_points > 0 else "LOSS" if pnl_points < 0 else "FLAT"
-                trade_size = position.size
-                position = None
+            # === NEW RULE: HOLD THROUGH "HOLD" SIGNAL ===
+            # We do NOTHING when nuclear signal disappears
+            # Position stays 100% open with all pyramids
             decision = "HOLD"
+            # ← signal weakened, but we ride the trend
+            result = "HOLD"                 # ← no exit yet
+            pnl = 0.0
+            signal_triggered = False
+            trade_filled = False
 
         pnl = pnl_points
         decision_upper = decision.upper()

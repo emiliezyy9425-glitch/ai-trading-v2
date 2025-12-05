@@ -19,7 +19,10 @@ from ib_insync import IB, Stock, util
 from live_trading import connect_ibkr   # ← Your live bot's connection function
 
 # --------------------------- CONFIG ---------------------------
-TICKERS_FILE = Path("tickers.txt")
+# Allow overriding the ticker list location so the backtester always uses the
+# caller's intended symbols (no hard-coded defaults).
+PROJECT_ROOT = Path(os.getenv("PROJECT_ROOT", "/app"))
+TICKERS_FILE = Path(os.getenv("TICKERS_FILE", PROJECT_ROOT / "tickers.txt"))
 START_DATE = "20240101"  # 1+ year of data
 END_DATE = "20251231"
 CAPITAL = 500_000
@@ -43,8 +46,6 @@ TIMEFRAMES = [
 # ----------------------------------------------------------------
 logging.basicConfig(level=logging.INFO)
 util.startLoop()
-
-PROJECT_ROOT = Path(os.getenv("PROJECT_ROOT", "/app"))
 DATA_DIR = PROJECT_ROOT / "data"
 BACKTEST_TRADE_LOG_PATH = DATA_DIR / "trade_log_backtest.csv"
 
@@ -475,6 +476,7 @@ def analyze_trades(
 # =============================================================================
 async def main() -> None:
     tickers = load_tickers(TICKERS_FILE)
+    print(f"Loaded {len(tickers)} tickers from {TICKERS_FILE.resolve()}: {', '.join(tickers)}")
     all_results = []
 
     for symbol in tickers:

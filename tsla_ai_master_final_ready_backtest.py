@@ -437,7 +437,60 @@ def run_backtest(
             )
             aligned = aligned[~aligned.index.duplicated(keep="last")]
 
-        final_features = aligned.reindex(FEATURE_NAMES, fill_value=0.0).astype(float)
+        aligned_features = aligned.reindex(FEATURE_NAMES, fill_value=0.0).astype(float)
+
+        # === INSTANT COMPATIBILITY PATCH: Restore old 70-feature format ===
+        from indicators import add_legacy_candlestick_columns
+        import pandas as pd
+
+        # Convert current clean row → DataFrame → apply legacy conversion
+        temp_df = pd.DataFrame([aligned_features]).T
+        temp_df.columns = ["value"]
+        temp_df = temp_df.reset_index().rename(columns={"index": "feature"})
+        temp_df = temp_df.pivot_table(values="value", columns="feature", fill_value=0.0)
+
+        # This function restores all the old split columns your models expect
+        temp_df = add_legacy_candlestick_columns(temp_df)
+
+        # Re-align to EXACT training order (your 70 features)
+        TRAINING_FEATURES_70 = [
+            "ret_24h", "price_z_120h", "ret_1h", "bb_position_1h", "ret_4h", "adx_1h", "adx_4h",
+            "bb_position_1h.2", "bb_position_1h.1", "ema10_change_1d", "ema10_change_1h", "ema10_change_4h",
+            "ema10_dev_1d", "ema10_dev_1h", "ema10_dev_4h", "macd_1d", "macd_1h", "macd_4h",
+            "macd_change_1d", "macd_change_1h", "macd_change_4h",
+            "pattern_bearish_engulfing_1d", "pattern_bearish_engulfing_1h", "pattern_bearish_engulfing_4h",
+            "pattern_bullish_engulfing_1d", "pattern_bullish_engulfing_1h", "pattern_bullish_engulfing_4h",
+            "pattern_evening_star_1d", "pattern_evening_star_1h", "pattern_evening_star_4h",
+            "pattern_hammer_1d", "pattern_hammer_1h", "pattern_hammer_4h",
+            "pattern_marubozu_bear_1d", "pattern_marubozu_bear_1h", "pattern_marubozu_bear_4h",
+            "pattern_marubozu_bull_1d", "pattern_marubozu_bull_1h", "pattern_marubozu_bull_4h",
+            "pattern_morning_star_1d", "pattern_morning_star_1h", "pattern_morning_star_4h",
+            "pattern_shooting_star_1d", "pattern_shooting_star_1h", "pattern_shooting_star_4h",
+            "price_above_ema10_1d", "price_above_ema10_1h", "price_above_ema10_4h",
+            "price_z_120h.2", "price_z_120h.1", "ret_1h.2", "ret_1h.1",
+            "ret_24h.2", "ret_24h.1", "ret_4h.2", "ret_4h.1",
+            "rsi_1h", "rsi_4h", "rsi_change_1h",
+            "signal_1d", "signal_1h", "signal_4h",
+            "sp500_above_20d",
+            "stoch_d_1d", "stoch_d_1h", "stoch_d_4h",
+            "stoch_k_1d", "stoch_k_1h", "stoch_k_4h",
+            "td9_1d", "td9_1h", "td9_4h",
+            "zig_1d", "zig_1h", "zig_4h"
+        ]
+
+        final_features = temp_df.reindex(columns=TRAINING_FEATURES_70, fill_value=0.0).iloc[0]
+        final_features = final_features.astype(float)
+
+        # Enforce exact length 70
+        if len(final_features) > 70:
+            final_features = final_features.iloc[:70]
+        elif len(final_features) < 70:
+            padding = pd.Series([0.0] * (70 - len(final_features)),
+                                index=[f"_pad_{i}" for i in range(70 - len(final_features))])
+            final_features = pd.concat([final_features, padding])
+
+        logger.info(f"Feature vector restored to 70 dims for legacy models (was {len(aligned_features)})")
+
         feature_history.append(final_features)
 
         sequence_df = pd.DataFrame(feature_history).reindex(

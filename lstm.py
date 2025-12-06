@@ -3,12 +3,16 @@ import torch
 import torch.nn as nn
 import math
 
+from self_learn import FEATURE_NAMES
+
+CURRENT_FEATURE_DIM = len(FEATURE_NAMES)
+
 
 class AttentiveBiLSTM(nn.Module):
     def __init__(
         self,
-        input_size: int,
-        hidden_size: int = 256,
+        input_size: int = CURRENT_FEATURE_DIM,
+        hidden_size: int = 384,
         num_layers: int = 3,
         dropout: float = 0.35,
         seq_len: int = 60,

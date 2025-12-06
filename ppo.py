@@ -6,6 +6,8 @@ import logging
 import os
 from self_learn import FEATURE_NAMES
 
+CURRENT_FEATURE_DIM = len(FEATURE_NAMES)
+
 os.makedirs("logs", exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
@@ -38,7 +40,7 @@ class TradingEnv(gym.Env):
         self.returns = []
 
         self.observation_space = spaces.Box(
-            low=-10, high=10, shape=(len(FEATURE_NAMES),), dtype=np.float32
+            low=-10, high=10, shape=(CURRENT_FEATURE_DIM,), dtype=np.float32
         )
         self.action_space = spaces.Discrete(3)  # 0=Buy, 1=Sell, 2=Hold
 
@@ -127,7 +129,11 @@ class TradingEnv(gym.Env):
         self.current_step += 1
 
         done = self.current_step >= self.max_steps
-        obs = self._get_observation() if not done else np.zeros(len(FEATURE_NAMES), dtype=np.float32)
+        obs = (
+            self._get_observation()
+            if not done
+            else np.zeros(CURRENT_FEATURE_DIM, dtype=np.float32)
+        )
 
         info = {
             "portfolio_value": self.portfolio_value,

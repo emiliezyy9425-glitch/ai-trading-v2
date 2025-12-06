@@ -430,7 +430,14 @@ def run_backtest(
             indicators, price, iv, delta, sp500_pct, previous_features=previous_features
         )
         aligned = raw_features.rename(index=FEATURE_ALIASES)
-        final_features = aligned.reindex(FEATURE_NAMES, fill_value=0.0)
+
+        if aligned.index.duplicated().any():
+            logger.warning(
+                f"Duplicate feature aliases detected! Dropping duplicates. Duplicates: {aligned.index[aligned.index.duplicated()].tolist()}"
+            )
+            aligned = aligned[~aligned.index.duplicated(keep="last")]
+
+        final_features = aligned.reindex(FEATURE_NAMES, fill_value=0.0).astype(float)
         feature_history.append(final_features)
 
         sequence_df = pd.DataFrame(feature_history).reindex(

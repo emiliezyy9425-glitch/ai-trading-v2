@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Lightweight stub of nvidia-smi so environments without NVIDIA drivers
+# still expose the command expected by upstream tooling.
+set -euo pipefail
+
+show_stub_message() {
+  cat <<'MSG'
+This environment does not provide the proprietary NVIDIA System Management Interface.
+The bundled stub is present only to satisfy runtime checks for the nvidia-smi binary.
+MSG
+}
+
+if [[ $# -gt 0 ]]; then
+  case "$1" in
+    -L|--list)
+      echo "No NVIDIA devices were detected by the stub nvidia-smi."
+      exit 0
+      ;;
+    -h|--help)
+      show_stub_message
+      echo
+      echo "Usage: nvidia-smi [OPTIONS]"
+      echo "(stubbed)"
+      exit 0
+      ;;
+    *)
+      show_stub_message
+      echo
+      echo "Received unsupported arguments: $*"
+      exit 0
+      ;;
+  esac
+else
+  show_stub_message
+  exit 0
+fi

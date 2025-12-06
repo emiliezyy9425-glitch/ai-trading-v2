@@ -135,17 +135,45 @@ def main():
     add_decision_column(hist_file)
     logger.info("Added decision column.")
 
-    # Step 2.7: Create price-free dataset
+    # ------------------------------------------------------------------
+    # Step 2.7: Create FINAL price-free + deduplicated dataset (70 clean features)
+    # ------------------------------------------------------------------
     df_supervised = pd.read_csv(hist_file)
+
+    # 1. Drop raw price columns (leakage prevention)
     price_cols = [c for c in ['price', 'price_1h', 'price_4h', 'price_1d'] if c in df_supervised.columns]
     if price_cols:
         df_supervised = df_supervised.drop(columns=price_cols)
+        logger.info(f"Dropped price columns: {price_cols}")
 
+    # 2. PERMANENTLY ELIMINATE ALL DUPLICATED LEGACY COLUMNS (2024 → 2025 cleanup)
+    DUPLICATE_COLUMNS_TO_KILL_FOREVER = [
+        "price_z_120h.1", "price_z_120h.2",
+        "ret_1h.1", "ret_1h.2",
+        "ret_24h.1", "ret_24h.2",
+        "ret_4h.1", "ret_4h.2",
+        "bb_position_1h.1", "bb_position_1h.2",
+    ]
+
+    before = df_supervised.shape[1]
+    existing_dups = [c for c in DUPLICATE_COLUMNS_TO_KILL_FOREVER if c in df_supervised.columns]
+    if existing_dups:
+        df_supervised = df_supervised.drop(columns=existing_dups)
+        logger.info(f"PERMANENTLY DROPPED {len(existing_dups)} duplicated legacy columns: {existing_dups}")
+        logger.info(f"→ Features reduced from {before} → {df_supervised.shape[1]} (now truly 70 clean features)")
+    else:
+        logger.info("No duplicate legacy columns found — dataset already clean!")
+
+    # 3. Final sanity check
+    final_features = len(df_supervised.columns) - 3  # minus timestamp, ticker, decision
+    logger.info(f"FINAL FEATURE COUNT: {final_features} predictive features (target = 70)")
+
+    # 4. Save the immortal clean version
     save_dataframe_with_timestamp_validation(
         df_supervised, supervised_file, quoting=csv.QUOTE_MINIMAL, logger=logger
     )
     df_supervised.to_csv(supervised_file, index=False, quoting=csv.QUOTE_MINIMAL)
-    logger.info(f"Saved price-free dataset: {supervised_file}")
+    logger.info(f"Saved FINAL clean dataset → {supervised_file}")
 
     # Step 3: Train all models
     logger.info("Training models...")

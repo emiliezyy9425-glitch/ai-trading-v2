@@ -441,41 +441,11 @@ def run_backtest(
         # Apply legacy candlestick conversion
         temp_df = add_legacy_candlestick_columns(temp_df)
 
-        # Exact 70-column order from your training
-        TRAINING_FEATURES_70 = [
-            "ret_24h", "price_z_120h", "ret_1h", "bb_position_1h", "ret_4h", "adx_1h", "adx_4h",
-            "bb_position_1h.2", "bb_position_1h.1", "ema10_change_1d", "ema10_change_1h", "ema10_change_4h",
-            "ema10_dev_1d", "ema10_dev_1h", "ema10_dev_4h", "macd_1d", "macd_1h", "macd_4h",
-            "macd_change_1d", "macd_change_1h", "macd_change_4h",
-            "pattern_bearish_engulfing_1d", "pattern_bearish_engulfing_1h", "pattern_bearish_engulfing_4h",
-            "pattern_bullish_engulfing_1d", "pattern_bullish_engulfing_1h", "pattern_bullish_engulfing_4h",
-            "pattern_evening_star_1d", "pattern_evening_star_1h", "pattern_evening_star_4h",
-            "pattern_hammer_1d", "pattern_hammer_1h", "pattern_hammer_4h",
-            "pattern_marubozu_bear_1d", "pattern_marubozu_bear_1h", "pattern_marubozu_bear_4h",
-            "pattern_marubozu_bull_1d", "pattern_marubozu_bull_1h", "pattern_marubozu_bull_4h",
-            "pattern_morning_star_1d", "pattern_morning_star_1h", "pattern_morning_star_4h",
-            "pattern_shooting_star_1d", "pattern_shooting_star_1h", "pattern_shooting_star_4h",
-            "price_above_ema10_1d", "price_above_ema10_1h", "price_above_ema10_4h",
-            "price_z_120h.2", "price_z_120h.1", "ret_1h.2", "ret_1h.1",
-            "ret_24h.2", "ret_24h.1", "ret_4h.2", "ret_4h.1",
-            "rsi_1h", "rsi_4h", "rsi_change_1h",
-            "signal_1d", "signal_1h", "signal_4h",
-            "sp500_above_20d",
-            "stoch_d_1d", "stoch_d_1h", "stoch_d_4h",
-            "stoch_k_1d", "stoch_k_1h", "stoch_k_4h",
-            "td9_1d", "td9_1h", "td9_4h",
-            "zig_1d", "zig_1h", "zig_4h"
-        ]
+        required = list(FEATURE_NAMES)
 
-        final_features = temp_df.reindex(columns=TRAINING_FEATURES_70, fill_value=0.0).iloc[0]
-        final_features = final_features.astype(float)
-
-        # Force exactly 70
-        if len(final_features) < 70:
-            pad = pd.Series([0.0] * (70 - len(final_features)),
-                            index=[f"_pad_{i}" for i in range(70 - len(final_features))])
-            final_features = pd.concat([final_features, pad])
-        final_features = final_features.iloc[:70]
+        final_features = pd.Series(default_feature_values(required), dtype=float)
+        final_features.update(temp_df.iloc[0])
+        final_features = final_features[required]
 
         logger.info(f"Legacy 70-feature vector restored (from {len(aligned_features)} clean features)")
         

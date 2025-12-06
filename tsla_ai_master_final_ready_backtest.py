@@ -149,6 +149,13 @@ def run_backtest(
 
         return frame.index.min() <= window_start and frame.index.max() >= window_end
 
+    def _smart_duration(delta_days: int) -> str:
+        if delta_days <= 365:
+            return f"{delta_days} D"
+        if delta_days <= 730:
+            return "2 Y"
+        return "3 Y"  # max safe
+
     def _load_raw_bars_from_disk(tf: str = timeframe) -> pd.DataFrame:
         raw_dir = Path(PROJECT_ROOT) / "data" / "lake" / "raw" / ticker / tf.replace(" ", "_")
         if not raw_dir.is_dir():
@@ -187,7 +194,7 @@ def run_backtest(
 
         if curated.empty or not _has_requested_window(curated, tf):
             delta_days = max(1, math.ceil((end_dt - start_dt).total_seconds() / 86400))
-            download_duration = f"{delta_days} D"
+            download_duration = _smart_duration(delta_days)
             logger.info(
                 "Curated %s bars missing requested window for %s; attempting IBKR download.",
                 tf,

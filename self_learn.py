@@ -18,85 +18,8 @@ from sklearn.model_selection import train_test_split
 import joblib
 
 # ================================
-# FEATURE NAMES — AUTO-GENERATED FROM CSV
+# FINAL 65 FEATURES — DECEMBER 2025 ETERNAL SCHEMA
 # ================================
-
-# Explicit per-timeframe feature schema (order matters for model compatibility)
-FEATURE_NAMES_1H: List[str] = [
-    "adx_1h",
-    "bb_position_1h",
-    "ema10_change_1h",
-    "ema10_dev_1h",
-    "macd_1h",
-    "macd_change_1h",
-    "pattern_bearish_engulfing_1h",
-    "pattern_bullish_engulfing_1h",
-    "pattern_evening_star_1h",
-    "pattern_hammer_1h",
-    "pattern_marubozu_bear_1h",
-    "pattern_marubozu_bull_1h",
-    "pattern_morning_star_1h",
-    "pattern_shooting_star_1h",
-    "price_above_ema10_1h",
-    "price_z_120h",
-    "ret_1h",
-    "ret_24h",
-    "ret_4h",
-    "rsi_1h",
-    "rsi_change_1h",
-    "signal_1h",
-    "stoch_d_1h",
-    "stoch_k_1h",
-    "td9_1h",
-    "zig_1h",
-]
-
-FEATURE_NAMES_4H: List[str] = [
-    "adx_4h",
-    "ema10_change_4h",
-    "ema10_dev_4h",
-    "macd_4h",
-    "macd_change_4h",
-    "pattern_bearish_engulfing_4h",
-    "pattern_bullish_engulfing_4h",
-    "pattern_evening_star_4h",
-    "pattern_hammer_4h",
-    "pattern_marubozu_bear_4h",
-    "pattern_marubozu_bull_4h",
-    "pattern_morning_star_4h",
-    "pattern_shooting_star_4h",
-    "price_above_ema10_4h",
-    "ret_4h",
-    "rsi_4h",
-    "signal_4h",
-    "stoch_d_4h",
-    "stoch_k_4h",
-    "td9_4h",
-    "zig_4h",
-]
-
-FEATURE_NAMES_1D: List[str] = [
-    "ema10_change_1d",
-    "ema10_dev_1d",
-    "macd_1d",
-    "macd_change_1d",
-    "pattern_bearish_engulfing_1d",
-    "pattern_bullish_engulfing_1d",
-    "pattern_evening_star_1d",
-    "pattern_hammer_1d",
-    "pattern_marubozu_bear_1d",
-    "pattern_marubozu_bull_1d",
-    "pattern_morning_star_1d",
-    "pattern_shooting_star_1d",
-    "price_above_ema10_1d",
-    "ret_24h",
-    "signal_1d",
-    "sp500_above_20d",
-    "stoch_d_1d",
-    "stoch_k_1d",
-    "td9_1d",
-    "zig_1d",
-]
 
 PATTERN_FEATURES_1H: List[str] = [
     "pattern_bearish_engulfing_1h",

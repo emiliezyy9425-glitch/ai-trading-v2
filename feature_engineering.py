@@ -388,14 +388,20 @@ def create_sequence(
     Returns:
         (seq_len, n_features) 的 np.float32 数组
     """
-    from self_learn import FEATURE_NAMES_1H  # 基础1H特征顺序（训练时用的）
+    from self_learn import FEATURE_NAMES  # 统一的特征顺序（训练时用的）
+
+    base_features = [
+        f
+        for f in FEATURE_NAMES
+        if f.endswith("_1h") or f in {"price_z_120h", "ret_24h", "ret_4h"}
+    ]
 
     # ====================== 第一步：统一转成干净的 DataFrame + UTC DatetimeIndex ======================
     if isinstance(df, np.ndarray):
         # 实时推理路径：模型只吐 array，我们自己造时间轴
         if df.ndim != 2:
             raise ValueError(f"ndarray must be 2D, got shape {df.shape}")
-        df = pd.DataFrame(df, columns=FEATURE_NAMES_1H)
+        df = pd.DataFrame(df, columns=base_features)
         fake_dates = pd.date_range("2020-01-01", periods=len(df), freq="1H", tz="UTC")
         df.index = fake_dates
         df.index.name = "timestamp"
@@ -430,9 +436,7 @@ def create_sequence(
 
     if len(window_1h) == 0:
         raise ValueError("提取的1H窗口为空")
-
     sequences = []
-    base_features = FEATURE_NAMES_1H
 
     for tf in timeframes:
         if tf == "1h":

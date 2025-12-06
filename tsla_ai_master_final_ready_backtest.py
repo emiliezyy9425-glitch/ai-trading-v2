@@ -333,7 +333,8 @@ def run_backtest(
         s5tw_history = s5tw_history.sort_index()
 
     position: Position | None = None
-    equity_curve = []
+    equity_curve: list[float] = []  # realized PnL per completed trade
+    price_history: list[tuple[datetime, float]] = []
     feature_history: deque[pd.Series] = live_trading.FEATURE_HISTORY[ticker]
 
     if not feature_history:
@@ -457,6 +458,7 @@ def run_backtest(
         # ================================================
         if not np.isfinite(price):
             price = price_history[-1][1] if price_history else 100.0
+        price_history.append((now, price))
         iv = indicators.get("iv", 50.0)
         delta = indicators.get("delta", 0.5)
         sp500_pct = indicators.get("sp500_above_20d", 50.0)
@@ -564,18 +566,17 @@ def run_backtest(
                 trade_filled = True
                 trade_size = position.size
                 result = "ENTRY"
-                equity_curve.append(0)  # first bar = no PnL yet
             else:
                 # Already in correct direction → pyramid or just hold
                 if position.direction == expected_direction:
-                    position.size += 1
+                    position.add(price, now)
                     trade_filled = True  # count as additional fill
                     trade_size = position.size
                     result = "PYRAMID"
                 # Reverse signal → close old, open new
                 else:
                     # Close old position
-                    pnl_points = (price - position.entry_price) * position.direction
+                    pnl_points = position.pnl(price)
                     equity_curve.append(pnl_points)
                     result = "WIN" if pnl_points > 0 else "LOSS" if pnl_points < 0 else "FLAT"
                     trade_size = position.size
@@ -586,15 +587,9 @@ def run_backtest(
                         direction=expected_direction,
                         size=1
                     )
+                    trade_size = position.size
                     trade_filled = True
         else:
-            # No nuclear signal → close if in position
-            if position is not None:
-                pnl_points = (price - position.entry_price) * position.direction
-                equity_curve.append(pnl_points)
-                result = "WIN" if pnl_points > 0 else "LOSS" if pnl_points < 0 else "FLAT"
-                trade_size = position.size
-                position = None
             decision = "HOLD"
 
         pnl = pnl_points
@@ -706,6 +701,16 @@ def run_backtest(
         })
 
     # Final stats
+    if position is not None and price_history:
+        final_price = price_history[-1][1]
+        pnl_points = position.pnl(final_price)
+        equity_curve.append(pnl_points)
+        logger.info(
+            "Closing open position at end of backtest @ %s for %+0.2f points.",
+            round(final_price, 4),
+            pnl_points,
+        )
+
     total = len(equity_curve)
     wins = len([x for x in equity_curve if x > 0])
     win_rate = wins / total * 100 if total else 0

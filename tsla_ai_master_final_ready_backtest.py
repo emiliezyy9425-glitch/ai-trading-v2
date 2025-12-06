@@ -29,6 +29,7 @@ from indicators import summarize_td_sequential
 from sp500_above_20d import load_sp500_above_20d_history
 from sp500_breadth import calculate_s5tw_history_ibkr_sync
 from feature_engineering import default_feature_values, sanitize_feature_row
+from tickers_cache import TICKERS_FILE_PATH, load_tickers as load_cached_tickers
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(
@@ -159,8 +160,11 @@ def write_trade_csv(row: dict):
         writer.writerow(row)
 
 
-def load_tickers(path: Path) -> list[str]:
-    """Load tickers from a file, ignoring blank lines and comments."""
+def load_tickers(path: Path | None = None) -> list[str]:
+    """Load tickers using the shared helper (with optional override path)."""
+
+    if path is None or path.resolve() == Path(TICKERS_FILE_PATH).resolve():
+        return load_cached_tickers()
 
     if not path.exists():
         raise FileNotFoundError(f"Ticker list not found: {path.resolve()}")
@@ -746,8 +750,11 @@ def main():
     parser.add_argument("--ticker", help="Backtest a single ticker (overrides --tickers-file)")
     parser.add_argument(
         "--tickers-file",
-        default="tickers.txt",
-        help="Path to newline-delimited ticker list; ignored when --ticker is provided.",
+        default=str(TICKERS_FILE_PATH),
+        help=(
+            "Path to newline-delimited ticker list; ignored when --ticker is provided. "
+            "Defaults to the shared data/tickers.txt used by live trading."
+        ),
     )
     parser.add_argument("--start-date", default="2024-01-01")
     parser.add_argument("--end-date", default=None)
@@ -760,7 +767,8 @@ def main():
     )
     args = parser.parse_args()
 
-    tickers = [args.ticker.upper()] if args.ticker else load_tickers(Path(args.tickers_file))
+    tickers_path = Path(args.tickers_file) if args.tickers_file else None
+    tickers = [args.ticker.upper()] if args.ticker else load_tickers(tickers_path)
 
     for ticker in tickers:
         logger.info("=== Running backtest for %s ===", ticker)

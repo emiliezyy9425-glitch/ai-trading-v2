@@ -228,29 +228,19 @@ def run_backtest(
 
     try:
         ib_for_breadth = live_trading.connect_ibkr(
-            max_retries=1, initial_client_id=base_client_id
+            max_retries=1, initial_client_id=base_client_id + 10
         )
-    except Exception as exc:  # pragma: no cover - defensive logging
-        logger.warning("IBKR connection for breadth history failed: %s", exc)
-        ib_for_breadth = None
-
-    if ib_for_breadth is not None:
-        try:
-            s5tw_history = calculate_s5tw_history_ibkr_sync(
-                ib_for_breadth,
-                start_dt.date(),
-                history_end_date,
-            )
-        except Exception as exc:  # pragma: no cover - IBKR/backfill errors
-            logger.warning(
-                "IBKR breadth history unavailable (%s); falling back to CSV export.",
-                exc,
-            )
-        finally:
+        if ib_for_breadth is not None:
             try:
+                s5tw_history = calculate_s5tw_history_ibkr_sync(
+                    ib_for_breadth, start_dt.date(), history_end_date
+                )
+                logger.info(f"Loaded {len(s5tw_history)} days of S5TW breadth data")
+            finally:
                 ib_for_breadth.disconnect()
-            except Exception:
-                pass
+    except Exception as e:
+        logger.warning(f"S5TW breadth unavailable (IBKR down): {e}. Using neutral 50%")
+        # Keep empty series → later code will default to 50.0
 
     if s5tw_history.empty:
         breadth_path = Path(DATA_DIR) / "S&P 500 Stocks Above 20-Day Average Historical Data.csv"
@@ -439,20 +429,19 @@ def run_backtest(
 
         aligned_features = aligned.reindex(FEATURE_NAMES, fill_value=0.0).astype(float)
 
-        # === INSTANT COMPATIBILITY PATCH: Restore old 70-feature format ===
+        # === CRITICAL FIX: Restore 70-feature legacy format for old models ===
         from indicators import add_legacy_candlestick_columns
-        import pandas as pd
 
-        # Convert current clean row → DataFrame → apply legacy conversion
+        # Convert current clean features → DataFrame
         temp_df = pd.DataFrame([aligned_features]).T
-        temp_df.columns = ["value"]
-        temp_df = temp_df.reset_index().rename(columns={"index": "feature"})
-        temp_df = temp_df.pivot_table(values="value", columns="feature", fill_value=0.0)
+        temp_df.columns = ['value']
+        temp_df = temp_df.reset_index().rename(columns={'index': 'feature'})
+        temp_df = temp_df.pivot_table(values='value', columns='feature', fill_value=0.0)
 
-        # This function restores all the old split columns your models expect
+        # Apply legacy candlestick conversion
         temp_df = add_legacy_candlestick_columns(temp_df)
 
-        # Re-align to EXACT training order (your 70 features)
+        # Exact 70-column order from your training
         TRAINING_FEATURES_70 = [
             "ret_24h", "price_z_120h", "ret_1h", "bb_position_1h", "ret_4h", "adx_1h", "adx_4h",
             "bb_position_1h.2", "bb_position_1h.1", "ema10_change_1d", "ema10_change_1h", "ema10_change_4h",
@@ -481,16 +470,15 @@ def run_backtest(
         final_features = temp_df.reindex(columns=TRAINING_FEATURES_70, fill_value=0.0).iloc[0]
         final_features = final_features.astype(float)
 
-        # Enforce exact length 70
-        if len(final_features) > 70:
-            final_features = final_features.iloc[:70]
-        elif len(final_features) < 70:
-            padding = pd.Series([0.0] * (70 - len(final_features)),
-                                index=[f"_pad_{i}" for i in range(70 - len(final_features))])
-            final_features = pd.concat([final_features, padding])
+        # Force exactly 70
+        if len(final_features) < 70:
+            pad = pd.Series([0.0] * (70 - len(final_features)),
+                            index=[f"_pad_{i}" for i in range(70 - len(final_features))])
+            final_features = pd.concat([final_features, pad])
+        final_features = final_features.iloc[:70]
 
-        logger.info(f"Feature vector restored to 70 dims for legacy models (was {len(aligned_features)})")
-
+        logger.info(f"Legacy 70-feature vector restored (from {len(aligned_features)} clean features)")
+        
         feature_history.append(final_features)
 
         sequence_df = pd.DataFrame(feature_history).reindex(

@@ -159,6 +159,24 @@ def write_trade_csv(row: dict):
         writer.writerow(row)
 
 
+def load_tickers(path: Path) -> list[str]:
+    """Load tickers from a file, ignoring blank lines and comments."""
+
+    if not path.exists():
+        raise FileNotFoundError(f"Ticker list not found: {path.resolve()}")
+
+    tickers = [
+        line.strip().upper()
+        for line in path.read_text().splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+
+    if not tickers:
+        raise ValueError("Ticker list is empty; add at least one symbol.")
+
+    return tickers
+
+
 def _align_feature_row(
     raw_features: pd.Series, previous_features: pd.Series | None = None
 ) -> pd.Series:
@@ -725,7 +743,12 @@ def run_backtest(
 
 def main():
     parser = argparse.ArgumentParser(description="Exact-match backtester")
-    parser.add_argument("--ticker", default="TSLA")
+    parser.add_argument("--ticker", help="Backtest a single ticker (overrides --tickers-file)")
+    parser.add_argument(
+        "--tickers-file",
+        default="tickers.txt",
+        help="Path to newline-delimited ticker list; ignored when --ticker is provided.",
+    )
     parser.add_argument("--start-date", default="2024-01-01")
     parser.add_argument("--end-date", default=None)
     parser.add_argument("--timeframe", default="1 hour", choices=["1 hour", "4 hours", "1 day"])
@@ -737,13 +760,20 @@ def main():
     )
     args = parser.parse_args()
 
-    run_backtest(
-        ticker=args.ticker,
-        start_date=args.start_date,
-        end_date=args.end_date,
-        timeframe=args.timeframe,
-        client_id=args.client_id,
-    )
+    tickers = [args.ticker.upper()] if args.ticker else load_tickers(Path(args.tickers_file))
+
+    for ticker in tickers:
+        logger.info("=== Running backtest for %s ===", ticker)
+        try:
+            run_backtest(
+                ticker=ticker,
+                start_date=args.start_date,
+                end_date=args.end_date,
+                timeframe=args.timeframe,
+                client_id=args.client_id,
+            )
+        except Exception as exc:  # pragma: no cover - defensive loop safety
+            logger.error("Backtest failed for %s: %s", ticker, exc)
 
 
 if __name__ == "__main__":

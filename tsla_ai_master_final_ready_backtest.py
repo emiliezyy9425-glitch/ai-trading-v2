@@ -29,7 +29,6 @@ from ml_predictor import (
 from indicators import summarize_td_sequential
 from sp500_above_20d import load_sp500_above_20d_history
 from sp500_breadth import calculate_s5tw_history_ibkr_sync
-from feature_engineering import default_feature_values
 from tickers_cache import TICKERS_FILE_PATH, get_cached_tickers
 
 logger = logging.getLogger(__name__)
@@ -132,6 +131,24 @@ def run_backtest(
 
     base_client_id = client_id or int(os.getenv("IBKR_BACKTEST_CLIENT_ID", "200"))
 
+    def _timeframe_delta(tf: str) -> timedelta:
+        tf = tf.strip().lower()
+        if tf in {"1 day", "1d", "daily"}:
+            return timedelta(days=1)
+        if tf in {"4 hours", "4h"}:
+            return timedelta(hours=4)
+        return timedelta(hours=1)
+
+    def _has_requested_window(frame: pd.DataFrame, tf: str) -> bool:
+        if frame.empty or not isinstance(frame.index, pd.DatetimeIndex):
+            return False
+
+        delta = _timeframe_delta(tf)
+        window_start = start_dt
+        window_end = end_dt - delta
+
+        return frame.index.min() <= window_start and frame.index.max() >= window_end
+
     def _load_raw_bars_from_disk(tf: str = timeframe) -> pd.DataFrame:
         raw_dir = Path(PROJECT_ROOT) / "data" / "lake" / "raw" / ticker / tf.replace(" ", "_")
         if not raw_dir.is_dir():
@@ -166,6 +183,17 @@ def run_backtest(
         """Fetch OHLCV data for a timeframe with curated → raw → IBKR fallbacks."""
 
         curated = live_trading.load_curated_bars(ticker, tf)
+        download_duration: str | None = None
+
+        if curated.empty or not _has_requested_window(curated, tf):
+            delta_days = max(1, math.ceil((end_dt - start_dt).total_seconds() / 86400))
+            download_duration = f"{delta_days} D"
+            logger.info(
+                "Curated %s bars missing requested window for %s; attempting IBKR download.",
+                tf,
+                ticker,
+            )
+            curated = _download_missing_bars_from_ibkr(tf, duration_override=download_duration)
         if not curated.empty:
             return curated
 
@@ -174,7 +202,7 @@ def run_backtest(
             logger.info("Using raw %s bars for %s because curated data is missing.", tf, ticker)
             return raw
 
-        downloaded = _download_missing_bars_from_ibkr(tf)
+        downloaded = _download_missing_bars_from_ibkr(tf, duration_override=download_duration)
         if not downloaded.empty:
             logger.info(
                 "Downloaded %s bars from IBKR for %s because curated/raw data was unavailable.",
@@ -183,7 +211,9 @@ def run_backtest(
             )
         return downloaded
 
-    def _download_missing_bars_from_ibkr(tf: str = timeframe) -> pd.DataFrame:
+    def _download_missing_bars_from_ibkr(
+        tf: str = timeframe, duration_override: str | None = None
+    ) -> pd.DataFrame:
         """Connect to IBKR and download historical bars when local data is missing."""
 
         try:
@@ -202,7 +232,7 @@ def run_backtest(
                 ticker,
                 tf,
             )
-            df = live_trading.get_historical_data(ib, ticker, tf)
+            df = live_trading.get_historical_data(ib, ticker, tf, duration_override)
             return df if df is not None else pd.DataFrame()
         except Exception as exc:  # pragma: no cover - defensive logging
             logger.error("Failed to download IBKR history for %s (%s): %s", ticker, tf, exc)
@@ -292,13 +322,6 @@ def run_backtest(
 
     logger.info(f"Loaded {len(df)} bars. Running bar-by-bar...")
 
-    def _timeframe_delta(tf: str) -> timedelta:
-        tf = tf.strip().lower()
-        if tf in {"1 day", "1d", "daily"}:
-            return timedelta(days=1)
-        if tf in {"4 hours", "4h"}:
-            return timedelta(hours=4)
-        return timedelta(hours=1)
 
     def _ema10_change_from_frame(frame: pd.DataFrame, tf: str, cutoff: datetime) -> float | None:
         if frame.empty or "close" not in frame:
@@ -427,7 +450,15 @@ def run_backtest(
             )
             aligned = aligned[~aligned.index.duplicated(keep="last")]
 
-        aligned_features = aligned.reindex(FEATURE_NAMES, fill_value=0.0).astype(float)
+        aligned_features = aligned.reindex(FEATURE_NAMES)
+
+        if aligned_features.isna().any():
+            missing_cols = aligned_features[aligned_features.isna()].index.tolist()
+            raise ValueError(
+                f"Missing base feature values for: {missing_cols}. Do not proceed with defaults or NaNs."
+            )
+
+        aligned_features = aligned_features.astype(float)
 
         # === CRITICAL FIX: Restore 70-feature legacy format for old models ===
         from indicators import add_legacy_candlestick_columns
@@ -442,23 +473,42 @@ def run_backtest(
         temp_df = add_legacy_candlestick_columns(temp_df)
 
         required = list(FEATURE_NAMES)
+        candidate_features = temp_df.iloc[0]
 
-        final_features = pd.Series(default_feature_values(required), dtype=float)
-        final_features.update(temp_df.iloc[0])
-        final_features = final_features[required]
+        missing_legacy = [col for col in required if col not in candidate_features.index]
+        if missing_legacy:
+            raise ValueError(
+                f"Legacy candlestick conversion did not produce all features: {missing_legacy}"
+            )
 
-        logger.info(f"Legacy 70-feature vector restored (from {len(aligned_features)} clean features)")
+        final_features = candidate_features[required]
+
+        numeric_features = pd.to_numeric(final_features, errors="coerce")
+        valid_mask = numeric_features.notna()
+        if numeric_features.isna().any():
+            bad = numeric_features[numeric_features.isna()].index.tolist()
+            raise ValueError(
+                f"Non-numeric or NaN feature values detected (no defaults allowed): {bad}"
+            )
+
+        final_features = numeric_features.astype(float)
+
+        logger.info(
+            "Legacy 70-feature vector restored with %d/%d populated values", 
+            valid_mask.sum(),
+            len(required),
+        )
         
         feature_history.append(final_features)
 
-        sequence_df = pd.DataFrame(feature_history).reindex(
-            columns=REQUIRED_FEATURE_COLUMNS, fill_value=0.0
-        )
+        sequence_df = pd.DataFrame(feature_history).reindex(columns=REQUIRED_FEATURE_COLUMNS)
+
+        if sequence_df.isna().any().any():
+            raise ValueError("Feature history contains NaNs; refusing to apply defaults for prediction.")
         if len(sequence_df) < FEATURE_SEQUENCE_WINDOW:
             padding_needed = FEATURE_SEQUENCE_WINDOW - len(sequence_df)
-            padding = pd.DataFrame(
-                [default_feature_values(REQUIRED_FEATURE_COLUMNS)] * padding_needed
-            )
+            first_row = sequence_df.iloc[[0]].copy()
+            padding = pd.concat([first_row] * padding_needed, ignore_index=True)
             sequence_df = pd.concat([padding, sequence_df], ignore_index=True)
         sequence_df.index = pd.date_range(
             end=now, periods=len(sequence_df), freq=_timeframe_delta(timeframe)

@@ -11,11 +11,16 @@ Example:
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
 
 import numpy as np
 import pandas as pd
+
+PROJECT_ROOT = Path(os.getenv("PROJECT_ROOT", "/app"))
+DATA_DIR = PROJECT_ROOT / "data"
+DEFAULT_BACKTEST_LOG = DATA_DIR / "trade_log_backtest_all_tickers.csv"
 
 # Models to evaluate; extend this list to include new model families.
 MODELS: List[str] = ["rf", "xgb", "lgb", "lstm", "tcn", "ppo", "transformer"]
@@ -171,7 +176,12 @@ def run_grid(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--csv", type=Path, default=Path("trade_log_backtest_all_tickers.csv"), help="Path to the trade log CSV file.")
+    parser.add_argument(
+        "--csv",
+        type=Path,
+        default=DEFAULT_BACKTEST_LOG,
+        help=f"Path to the trade log CSV file (default: {DEFAULT_BACKTEST_LOG}).",
+    )
     parser.add_argument("--ticker", type=str, default="TSLA", help="Ticker to filter by (default: TSLA). Use blank to keep all.")
     parser.add_argument("--top", type=int, default=20, help="Number of top rows to display by total return.")
     parser.add_argument("--save-results", type=Path, default=None, help="Optional path to save the aggregated results CSV.")

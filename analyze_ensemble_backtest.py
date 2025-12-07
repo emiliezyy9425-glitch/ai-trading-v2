@@ -20,6 +20,7 @@ from typing import List, Dict, Tuple
 
 import numpy as np
 import pandas as pd
+from tqdm import tqdm
 
 
 # ----------------------------- Config --------------------------------- #
@@ -302,19 +303,22 @@ def main():
 
     results = []
 
-    for ensemble in ENSEMBLES:
-        for conf_thresh in CONF_THRESHOLDS:
-            for style in EXIT_STYLES:
-                summary, _ = backtest_ensemble(
-                    df,
-                    ensemble,
-                    conf_thresh,
-                    exit_style=style,
-                    tp=TP_DEFAULT,
-                    sl=SL_DEFAULT,
-                    max_hours=MAX_HOURS_DEFAULT,
-                )
-                results.append(summary)
+    total_runs = len(ENSEMBLES) * len(CONF_THRESHOLDS) * len(EXIT_STYLES)
+    with tqdm(total=total_runs, desc="Running backtests") as pbar:
+        for ensemble in ENSEMBLES:
+            for conf_thresh in CONF_THRESHOLDS:
+                for style in EXIT_STYLES:
+                    summary, _ = backtest_ensemble(
+                        df,
+                        ensemble,
+                        conf_thresh,
+                        exit_style=style,
+                        tp=TP_DEFAULT,
+                        sl=SL_DEFAULT,
+                        max_hours=MAX_HOURS_DEFAULT,
+                    )
+                    results.append(summary)
+                    pbar.update(1)
 
     res_df = pd.DataFrame(results)
 

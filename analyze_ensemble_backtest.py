@@ -1,19 +1,7 @@
 #!/usr/bin/env python3
 """
 FULL AUTO-OPTIMIZER FOR MODEL-ENSEMBLE TRADING STRATEGIES
-
-Features:
-- Uses ALL 127 combinations of 7 models (2^7 - 1)
-- Per-model confidence thresholds (0.50 → 1.00, step 0.05)
-- Full TP sweep (1% → 10%)
-- Full SL sweep (0.5% → 5%)
-- Exit styles A, B, C, D, E
-- Majority voting (k = ceil(len(models)/2))
-- Early stopping for inefficient strategies
-- tqdm progress bar
-- Outputs:
-    * Top strategies
-    * best_strategy.json
+(Updated to support CLI early-stopping options)
 """
 
 import argparse
@@ -28,8 +16,8 @@ import json
 
 BASE_MODELS = ["rf", "xgb", "lgb", "lstm", "tcn", "ppo", "transformer"]
 
-
-CONF_GRID = [round(0.50 + 0.01 * i, 2) for i in range(51)]  # 0.50 → 1.00 in 0.01 steps
+# Per-model thresholds: 0.50 → 1.00 (step 0.01)
+CONF_GRID = [round(0.50 + 0.01 * i, 2) for i in range(51)]
 
 EXIT_STYLES = ["A", "B", "C", "D", "E"]
 
@@ -40,10 +28,6 @@ TP_LEVELS = [round(0.01 * i, 3) for i in range(1, 11)]
 SL_LEVELS = [round(0.005 * i, 3) for i in range(1, 11)]
 
 MAX_HOURS_DEFAULT = 24.0
-
-# Early stop defaults
-EARLY_STOP_TRADES = 250
-EARLY_STOP_THRESHOLD = -1.0           # Stop when cumulative return < -100%
 
 
 # ========================== DATA LOADING =============================== #
@@ -65,7 +49,6 @@ def load_data(csv_path):
 # ========================= SIGNAL FUNCTIONS =========================== #
 
 def model_signal(row, model, thresh):
-    """Return BUY or SELL only when model vote exists AND confidence ≥ threshold."""
     v = row[f"{model}_vote"]
     c = row[f"{model}_conf"]
     if v not in ("BUY", "SELL"):
@@ -76,9 +59,7 @@ def model_signal(row, model, thresh):
 
 
 def ensemble_vote(row, models, thresh_dict, k):
-    """k-of-n voting among selected models."""
     votes = []
-
     for m in models:
         sig = model_signal(row, m, thresh_dict[m])
         if sig:
@@ -94,7 +75,6 @@ def ensemble_vote(row, models, thresh_dict, k):
         return "BUY"
     if sells >= k and sells > buys:
         return "SELL"
-
     return "HOLD"
 
 
@@ -104,12 +84,10 @@ def backtest_strategy(
     df, models, conf_dict, k, exit_style,
     tp=None, sl=None,
     max_hours=MAX_HOURS_DEFAULT,
-    early_stop=True,
-    early_trades=EARLY_STOP_TRADES,
-    early_threshold=EARLY_STOP_THRESHOLD,
+    early_stop=False,
+    early_trades=250,
+    early_threshold=-1.0,
 ):
-    """Evaluate one strategy with early stopping."""
-
     trades = []
     cum_ret = 0.0
     n_tr = 0
@@ -130,6 +108,7 @@ def backtest_strategy(
 
             # ==== EXIT LOGIC ====
             if pos is not None:
+
                 dt = (t - pos["t0"]).total_seconds() / 3600.0
                 ret = (price - pos["p0"]) / pos["p0"]
                 if pos["dir"] == "SELL":
@@ -177,17 +156,18 @@ def backtest_strategy(
             if kill:
                 break
 
-            # ==== ENTRY LOGIC ====
+            # ==== ENTRY ====
             if pos is None and vote in ("BUY", "SELL"):
                 pos = {"t0": t, "p0": price, "dir": vote}
 
-        # ==== Close remaining position at end ====
+        # close at end of last bar
         if pos is not None and not kill:
             price = g["price"].iloc[-1]
             t_last = g["timestamp"].iloc[-1]
             ret = (price - pos["p0"]) / pos["p0"]
             if pos["dir"] == "SELL":
                 ret = -ret
+
             trades.append({
                 "ticker": ticker,
                 "entry_time": pos["t0"],
@@ -198,6 +178,7 @@ def backtest_strategy(
                 "ret": ret,
                 "exit_reason": "eod",
             })
+
             cum_ret += ret
             n_tr += 1
 
@@ -228,37 +209,32 @@ def backtest_strategy(
     }
 
 
-# ===================== ENSEMBLE GENERATOR ============================ #
+# ===================== ENSEMBLES ============================ #
 
 def generate_all_model_combinations():
-    """
-    Generate all 127 possible non-empty subsets of the 7 models.
-    For each combination: k = majority vote = ceil(n/2)
-    """
-    all_sets = []
+    out = []
     for r in range(1, len(BASE_MODELS) + 1):
         for combo in combinations(BASE_MODELS, r):
             models = list(combo)
             k = math.ceil(len(models) / 2)
-            all_sets.append((models, k))
-    return all_sets
+            out.append((models, k))
+    return out
 
 
-# ========================== OPTIMIZATION =============================== #
+# ========================== OPTIMIZER =============================== #
 
-def optimize(df, top_k=20):
+def optimize(df, early_stop, early_trades, early_threshold, top_k=20):
 
     ensembles = generate_all_model_combinations()
 
-    # Build threshold combinations for each ensemble
+    # ALL per-model thresholds
     strat_queue = []
     for models, k in ensembles:
-        grids = [CONF_GRID for _ in models]  # per-model grid
+        grids = [CONF_GRID for _ in models]
         for conf_vec in product(*grids):
             conf_dict = {models[i]: conf_vec[i] for i in range(len(models))}
             strat_queue.append((models, conf_dict, k))
 
-    # Compute total jobs
     total_jobs = 0
     for (models, conf_dict, k) in strat_queue:
         for style in EXIT_STYLES:
@@ -281,9 +257,9 @@ def optimize(df, top_k=20):
                             df, models, conf_dict, k,
                             exit_style=style,
                             tp=tp, sl=sl,
-                            early_stop=True,
-                            early_trades=EARLY_STOP_TRADES,
-                            early_threshold=EARLY_STOP_THRESHOLD
+                            early_stop=early_stop,
+                            early_trades=early_trades,
+                            early_threshold=early_threshold
                         )
                         results.append(res)
                         bar.update(1)
@@ -292,30 +268,43 @@ def optimize(df, top_k=20):
                     res = backtest_strategy(
                         df, models, conf_dict, k,
                         exit_style=style,
-                        tp=None, sl=None,
-                        early_stop=True,
-                        early_trades=EARLY_STOP_TRADES,
-                        early_threshold=EARLY_STOP_THRESHOLD
+                        early_stop=early_stop,
+                        early_trades=early_trades,
+                        early_threshold=early_threshold
                     )
                     results.append(res)
                     bar.update(1)
 
-    # Rank by total return
     ranked = sorted(results, key=lambda x: x["tot"], reverse=True)
     return ranked[:top_k], ranked[0]
 
 
-# ======================== MAIN SCRIPT ================================= #
+# ======================== MAIN ======================================= #
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--csv", required=True)
     parser.add_argument("--top-k", type=int, default=20)
+
+    # ADD EARLY-STOP CLI SUPPORT HERE
+    parser.add_argument("--early-stop", action="store_true",
+                        help="Enable early stopping for bad strategies.")
+    parser.add_argument("--early-stop-trades", type=int, default=250,
+                        help="Minimum trades before early stopping kicks in.")
+    parser.add_argument("--early-stop-threshold", type=float, default=-1.0,
+                        help="Stop if cumulative return <= this value.")
+
     args = parser.parse_args()
 
     df = load_data(args.csv)
 
-    top_k_results, best = optimize(df, top_k=args.top_k)
+    top_k_results, best = optimize(
+        df,
+        early_stop=args.early_stop,
+        early_trades=args.early_stop_trades,
+        early_threshold=args.early_stop_threshold,
+        top_k=args.top_k
+    )
 
     print("\n==================== TOP STRATEGIES ====================\n")
     for i, r in enumerate(top_k_results):

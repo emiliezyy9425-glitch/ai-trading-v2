@@ -1,359 +1,330 @@
 #!/usr/bin/env python3
 """
-Ensemble backtest: combine multiple models' decisions to find the
-optimal entry/exit strategy for maximum return.
+FULL AUTO-OPTIMIZER FOR MODEL-ENSEMBLE TRADING STRATEGIES
 
-This version:
-- Sweeps over:
-    * ensembles
-    * confidence thresholds
-    * exit styles (A–E)
-    * take profit (TP) and stop loss (SL) grids for styles C & E
-- Shows a tqdm progress bar.
+Features:
+- Uses ALL 127 combinations of 7 models (2^7 - 1)
+- Per-model confidence thresholds (0.50 → 1.00, step 0.05)
+- Full TP sweep (1% → 10%)
+- Full SL sweep (0.5% → 5%)
+- Exit styles A, B, C, D, E
+- Majority voting (k = ceil(len(models)/2))
+- Early stopping for inefficient strategies
+- tqdm progress bar
+- Outputs:
+    * Top strategies
+    * best_strategy.json
 """
 
 import argparse
-from dataclasses import dataclass
-from typing import List, Dict
-
 import numpy as np
 import pandas as pd
+from itertools import combinations, product
 from tqdm import tqdm
+import math
+import json
+
+# ============================= CONFIG ================================= #
+
+BASE_MODELS = ["rf", "xgb", "lgb", "lstm", "tcn", "ppo", "transformer"]
 
 
-# ----------------------------- Config --------------------------------- #
+CONF_GRID = [round(0.50 + 0.01 * i, 2) for i in range(51)]  # 0.50 → 1.00 in 0.01 steps
 
-# Exit styles:
-# A: fixed 4h exit
-# B: fixed 8h exit
-# C: TP/SL only (with max hold)
-# D: reverse-signal only
-# E: hybrid (TP/SL + reverse + max hold)
 EXIT_STYLES = ["A", "B", "C", "D", "E"]
 
-# Confidence sweep defaults (you can override via CLI)
-CONF_MIN_DEFAULT = 0.90
-CONF_MAX_DEFAULT = 1.00
-CONF_STEP_DEFAULT = 0.01
+# TP sweep: 1% → 10%
+TP_LEVELS = [round(0.01 * i, 3) for i in range(1, 11)]
 
-# TP / SL grids for exit styles C & E
-# Values are in "return space" (e.g. 0.02 = +2%)
-TP_LEVELS = [0.01, 0.02, 0.03]   # +1%, +2%, +3%
-SL_LEVELS = [0.005, 0.01, 0.015] # -0.5%, -1%, -1.5%
+# SL sweep: 0.5% → 5.0%
+SL_LEVELS = [round(0.005 * i, 3) for i in range(1, 11)]
 
-# Max holding time (in hours) used for C & E
 MAX_HOURS_DEFAULT = 24.0
 
-
-@dataclass
-class EnsembleConfig:
-    name: str
-    models: List[str]
-    k: int  # minimum agreeing models
+# Early stop defaults
+EARLY_STOP_TRADES = 250
+EARLY_STOP_THRESHOLD = -1.0           # Stop when cumulative return < -100%
 
 
-ALL_ENSEMBLES: List[EnsembleConfig] = [
-    EnsembleConfig("lstm_only", ["lstm"], 1),
-    EnsembleConfig("xgb_only", ["xgb"], 1),
-    EnsembleConfig("lstm_xgb_agree", ["lstm", "xgb"], 2),
-    EnsembleConfig("lstm_xgb_trans_2of3", ["lstm", "xgb", "transformer"], 2),
-    EnsembleConfig("lstm_xgb_trans_3of3", ["lstm", "xgb", "transformer"], 3),
-    EnsembleConfig(
-        "all_models_majority",
-        ["rf", "xgb", "lgb", "lstm", "tcn", "ppo", "transformer"],
-        4,  # majority of 7
-    ),
-]
+# ========================== DATA LOADING =============================== #
 
-
-# -------------------------- Data Loader ------------------------------ #
-
-def load_data(csv_path: str) -> pd.DataFrame:
+def load_data(csv_path):
     df = pd.read_csv(csv_path)
     df["timestamp"] = pd.to_datetime(df["timestamp"])
     df = df.sort_values(["ticker", "timestamp"]).reset_index(drop=True)
 
-    vote_cols = [c for c in df.columns if c.endswith("_vote")]
-    for c in vote_cols:
-        df[c] = df[c].astype(str).str.upper()
-
-    conf_cols = [c for c in df.columns if c.endswith("_conf")]
-    for c in conf_cols:
-        df[c] = pd.to_numeric(df[c], errors="coerce")
+    for c in df.columns:
+        if c.endswith("_vote"):
+            df[c] = df[c].astype(str).str.upper()
+        if c.endswith("_conf"):
+            df[c] = pd.to_numeric(df[c], errors="coerce")
 
     return df
 
 
-# --------------------------- Core Logic ------------------------------ #
+# ========================= SIGNAL FUNCTIONS =========================== #
 
-def compute_ensemble_signal(row, ensemble: EnsembleConfig, conf_thresh: float) -> str:
-    """Compute BUY/SELL/HOLD for one row from an ensemble."""
-    buy = 0
-    sell = 0
+def model_signal(row, model, thresh):
+    """Return BUY or SELL only when model vote exists AND confidence ≥ threshold."""
+    v = row[f"{model}_vote"]
+    c = row[f"{model}_conf"]
+    if v not in ("BUY", "SELL"):
+        return None
+    if c is None or c < thresh:
+        return None
+    return v
 
-    for m in ensemble.models:
-        vote_col = f"{m}_vote"
-        conf_col = f"{m}_conf"
-        if vote_col not in row or conf_col not in row:
-            continue
 
-        v = row[vote_col]
-        c = row[conf_col]
+def ensemble_vote(row, models, thresh_dict, k):
+    """k-of-n voting among selected models."""
+    votes = []
 
-        if v not in ("BUY", "SELL"):
-            continue
-        if pd.isna(c) or c < conf_thresh:
-            continue
+    for m in models:
+        sig = model_signal(row, m, thresh_dict[m])
+        if sig:
+            votes.append(sig)
 
-        if v == "BUY":
-            buy += 1
-        elif v == "SELL":
-            sell += 1
+    if len(votes) < k:
+        return "HOLD"
 
-    if buy >= ensemble.k and buy >= sell and buy > 0:
+    buys = votes.count("BUY")
+    sells = votes.count("SELL")
+
+    if buys >= k and buys >= sells:
         return "BUY"
-    if sell >= ensemble.k and sell > buy and sell > 0:
+    if sells >= k and sells > buys:
         return "SELL"
+
     return "HOLD"
 
 
-def backtest_ensemble(
-    df: pd.DataFrame,
-    ensemble: EnsembleConfig,
-    conf_thresh: float,
-    exit_style: str,
-    tp: float = None,
-    sl: float = None,
-    max_hours: float = MAX_HOURS_DEFAULT,
-) -> Dict:
-    """
-    Backtest a single (ensemble, conf_thresh, exit_style, tp, sl) combination.
+# =========================== BACKTEST ENGINE =========================== #
 
-    For exit_style:
-      A: fixed 4h
-      B: fixed 8h
-      C: TP/SL only (plus max_hours)
-      D: reverse only
-      E: TP/SL + reverse + max_hours
-    """
+def backtest_strategy(
+    df, models, conf_dict, k, exit_style,
+    tp=None, sl=None,
+    max_hours=MAX_HOURS_DEFAULT,
+    early_stop=True,
+    early_trades=EARLY_STOP_TRADES,
+    early_threshold=EARLY_STOP_THRESHOLD,
+):
+    """Evaluate one strategy with early stopping."""
+
     trades = []
+    cum_ret = 0.0
+    n_tr = 0
+    kill = False
 
     for ticker, g in df.groupby("ticker"):
+        if kill:
+            break
+
         g = g.reset_index(drop=True)
-        pos = None  # {t0, p0, dir}
+        pos = None
 
         for _, row in g.iterrows():
             t = row["timestamp"]
             price = row["price"]
-            decision = compute_ensemble_signal(row, ensemble, conf_thresh)
 
-            # Manage exit
+            vote = ensemble_vote(row, models, conf_dict, k)
+
+            # ==== EXIT LOGIC ====
             if pos is not None:
-                dt_hours = (t - pos["t0"]).total_seconds() / 3600.0
+                dt = (t - pos["t0"]).total_seconds() / 3600.0
                 ret = (price - pos["p0"]) / pos["p0"]
                 if pos["dir"] == "SELL":
                     ret = -ret
 
-                exit_now = False
-                reason = None
+                exit_now, reason = False, None
 
-                # Time-based exits A/B
-                if exit_style == "A" and dt_hours >= 4:
+                if exit_style == "A" and dt >= 4:
                     exit_now, reason = True, "4h"
-                elif exit_style == "B" and dt_hours >= 8:
+                elif exit_style == "B" and dt >= 8:
                     exit_now, reason = True, "8h"
 
-                # TP/SL exits for C & E
                 if exit_style in ("C", "E") and not exit_now:
-                    if tp is not None and ret >= tp:
+                    if tp and ret >= tp:
                         exit_now, reason = True, "tp"
-                    elif sl is not None and ret <= -sl:
+                    elif sl and ret <= -sl:
                         exit_now, reason = True, "sl"
-                    elif dt_hours >= max_hours:
-                        exit_now, reason = True, f"max_{max_hours}h"
+                    elif dt >= max_hours:
+                        exit_now, reason = True, "maxH"
 
-                # Reverse-signal exits for D & E
                 if exit_style in ("D", "E") and not exit_now:
-                    if decision in ("BUY", "SELL") and decision != pos["dir"]:
+                    if vote in ("BUY", "SELL") and vote != pos["dir"]:
                         exit_now, reason = True, "reverse"
 
                 if exit_now:
-                    trades.append(
-                        {
-                            "ensemble": ensemble.name,
-                            "ticker": ticker,
-                            "entry_time": pos["t0"],
-                            "exit_time": t,
-                            "direction": pos["dir"],
-                            "entry_price": pos["p0"],
-                            "exit_price": price,
-                            "ret": ret,
-                            "exit_reason": reason,
-                            "conf_thresh": conf_thresh,
-                            "exit_style": exit_style,
-                            "tp": tp,
-                            "sl": sl,
-                        }
-                    )
+                    trades.append({
+                        "ticker": ticker,
+                        "entry_time": pos["t0"],
+                        "exit_time": t,
+                        "entry_price": pos["p0"],
+                        "exit_price": price,
+                        "direction": pos["dir"],
+                        "ret": ret,
+                        "exit_reason": reason,
+                    })
                     pos = None
 
-            # Manage entry
-            if pos is None and decision in ("BUY", "SELL"):
-                pos = {"t0": t, "p0": price, "dir": decision}
+                    cum_ret += ret
+                    n_tr += 1
 
-        # Close any open position at the end of that ticker's history
-        if pos is not None:
+                    if early_stop and n_tr >= early_trades and cum_ret <= early_threshold:
+                        kill = True
+                        break
+
+            if kill:
+                break
+
+            # ==== ENTRY LOGIC ====
+            if pos is None and vote in ("BUY", "SELL"):
+                pos = {"t0": t, "p0": price, "dir": vote}
+
+        # ==== Close remaining position at end ====
+        if pos is not None and not kill:
             price = g["price"].iloc[-1]
             t_last = g["timestamp"].iloc[-1]
             ret = (price - pos["p0"]) / pos["p0"]
             if pos["dir"] == "SELL":
                 ret = -ret
-            trades.append(
-                {
-                    "ensemble": ensemble.name,
-                    "ticker": ticker,
-                    "entry_time": pos["t0"],
-                    "exit_time": t_last,
-                    "direction": pos["dir"],
-                    "entry_price": pos["p0"],
-                    "exit_price": price,
-                    "ret": ret,
-                    "exit_reason": "eod",
-                    "conf_thresh": conf_thresh,
-                    "exit_style": exit_style,
-                    "tp": tp,
-                    "sl": sl,
-                }
-            )
+            trades.append({
+                "ticker": ticker,
+                "entry_time": pos["t0"],
+                "exit_time": t_last,
+                "entry_price": pos["p0"],
+                "exit_price": price,
+                "direction": pos["dir"],
+                "ret": ret,
+                "exit_reason": "eod",
+            })
+            cum_ret += ret
+            n_tr += 1
 
-    tr = pd.DataFrame(trades)
-    if tr.empty:
+    if not trades:
         return {
-            "ensemble": ensemble.name,
-            "conf_thresh": conf_thresh,
-            "exit_style": exit_style,
+            "models": models,
+            "conf": conf_dict,
+            "exit": exit_style,
             "tp": tp,
             "sl": sl,
             "n": 0,
-            "tot": 0.0,
-            "avg": 0.0,
-            "win": 0.0,
+            "tot": 0,
+            "avg": 0,
+            "win": 0,
         }
 
-    total = tr["ret"].sum()
-    avg = tr["ret"].mean()
-    winrate = (tr["ret"] > 0).mean()
-
+    tr = pd.DataFrame(trades)
     return {
-        "ensemble": ensemble.name,
-        "conf_thresh": conf_thresh,
-        "exit_style": exit_style,
+        "models": models,
+        "conf": conf_dict,
+        "exit": exit_style,
         "tp": tp,
         "sl": sl,
         "n": len(tr),
-        "tot": float(total),
-        "avg": float(avg),
-        "win": float(winrate),
+        "tot": tr["ret"].sum(),
+        "avg": tr["ret"].mean(),
+        "win": (tr["ret"] > 0).mean(),
     }
 
 
-# --------------------------- Main Script ------------------------------ #
+# ===================== ENSEMBLE GENERATOR ============================ #
+
+def generate_all_model_combinations():
+    """
+    Generate all 127 possible non-empty subsets of the 7 models.
+    For each combination: k = majority vote = ceil(n/2)
+    """
+    all_sets = []
+    for r in range(1, len(BASE_MODELS) + 1):
+        for combo in combinations(BASE_MODELS, r):
+            models = list(combo)
+            k = math.ceil(len(models) / 2)
+            all_sets.append((models, k))
+    return all_sets
+
+
+# ========================== OPTIMIZATION =============================== #
+
+def optimize(df, top_k=20):
+
+    ensembles = generate_all_model_combinations()
+
+    # Build threshold combinations for each ensemble
+    strat_queue = []
+    for models, k in ensembles:
+        grids = [CONF_GRID for _ in models]  # per-model grid
+        for conf_vec in product(*grids):
+            conf_dict = {models[i]: conf_vec[i] for i in range(len(models))}
+            strat_queue.append((models, conf_dict, k))
+
+    # Compute total jobs
+    total_jobs = 0
+    for (models, conf_dict, k) in strat_queue:
+        for style in EXIT_STYLES:
+            if style in ("C", "E"):
+                total_jobs += len(TP_LEVELS) * len(SL_LEVELS)
+            else:
+                total_jobs += 1
+
+    print(f"\nTotal strategies to evaluate: {total_jobs:,}\n")
+
+    results = []
+
+    with tqdm(total=total_jobs, desc="Optimizing", ncols=100) as bar:
+        for (models, conf_dict, k) in strat_queue:
+            for style in EXIT_STYLES:
+
+                if style in ("C", "E"):
+                    for tp, sl in product(TP_LEVELS, SL_LEVELS):
+                        res = backtest_strategy(
+                            df, models, conf_dict, k,
+                            exit_style=style,
+                            tp=tp, sl=sl,
+                            early_stop=True,
+                            early_trades=EARLY_STOP_TRADES,
+                            early_threshold=EARLY_STOP_THRESHOLD
+                        )
+                        results.append(res)
+                        bar.update(1)
+
+                else:
+                    res = backtest_strategy(
+                        df, models, conf_dict, k,
+                        exit_style=style,
+                        tp=None, sl=None,
+                        early_stop=True,
+                        early_trades=EARLY_STOP_TRADES,
+                        early_threshold=EARLY_STOP_THRESHOLD
+                    )
+                    results.append(res)
+                    bar.update(1)
+
+    # Rank by total return
+    ranked = sorted(results, key=lambda x: x["tot"], reverse=True)
+    return ranked[:top_k], ranked[0]
+
+
+# ======================== MAIN SCRIPT ================================= #
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Ensemble backtest with TP/SL optimization."
-    )
-    parser.add_argument("--csv", required=True,
-                        help="Path to trade_log_backtest_all_tickers.csv")
-    parser.add_argument("--top-k", type=int, default=20,
-                        help="Number of best rows to print")
-    parser.add_argument("--min-conf", type=float, default=CONF_MIN_DEFAULT,
-                        help="Minimum confidence threshold (default 0.90)")
-    parser.add_argument("--max-conf", type=float, default=CONF_MAX_DEFAULT,
-                        help="Maximum confidence threshold (default 1.00)")
-    parser.add_argument("--conf-step", type=float, default=CONF_STEP_DEFAULT,
-                        help="Step size for confidence sweep (default 0.01)")
-    parser.add_argument(
-        "--ensembles",
-        type=str,
-        default="lstm_only,xgb_only,lstm_xgb_agree",
-        help=("Comma-separated ensemble names to test. "
-              "Available: lstm_only,xgb_only,lstm_xgb_agree,"
-              "lstm_xgb_trans_2of3,lstm_xgb_trans_3of3,all_models_majority"),
-    )
-
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--csv", required=True)
+    parser.add_argument("--top-k", type=int, default=20)
     args = parser.parse_args()
 
     df = load_data(args.csv)
 
-    # Build confidence grid
-    conf_vals = np.arange(args.max_conf, args.min_conf - 1e-9, -args.conf_step)
-    conf_vals = [round(float(c), 4) for c in conf_vals]
+    top_k_results, best = optimize(df, top_k=args.top_k)
 
-    # Select ensembles
-    requested = {e.strip() for e in args.ensembles.split(",") if e.strip()}
-    ensembles = [e for e in ALL_ENSEMBLES if e.name in requested]
-    if not ensembles:
-        raise ValueError("No valid ensembles selected. Check --ensembles argument.")
+    print("\n==================== TOP STRATEGIES ====================\n")
+    for i, r in enumerate(top_k_results):
+        print(f"#{i+1}  {r}")
 
-    # Compute total jobs for progress bar
-    num_conf = len(conf_vals)
-    num_ensembles = len(ensembles)
-    num_styles_no_tp = len([s for s in EXIT_STYLES if s not in ("C", "E")])
-    num_styles_tp = len([s for s in EXIT_STYLES if s in ("C", "E")])
+    with open("best_strategy.json", "w") as f:
+        json.dump(best, f, indent=4)
 
-    jobs_no_tp = num_ensembles * num_conf * num_styles_no_tp
-    jobs_tp = num_ensembles * num_conf * num_styles_tp * len(TP_LEVELS) * len(SL_LEVELS)
-    total_jobs = jobs_no_tp + jobs_tp
-
-    print(f"Ensembles: {[e.name for e in ensembles]}")
-    print(f"Confidence grid: {conf_vals[0]} -> {conf_vals[-1]} (step={args.conf_step})")
-    print(f"TP levels: {TP_LEVELS}")
-    print(f"SL levels: {SL_LEVELS}")
-    print(f"Total combinations to run: {total_jobs}")
-
-    results = []
-
-    with tqdm(total=total_jobs, desc="Ensemble+TP/SL Backtest", ncols=100) as bar:
-        for ensemble in ensembles:
-            for conf in conf_vals:
-                # First, exit styles without TP/SL (A, B, D)
-                for style in EXIT_STYLES:
-                    if style not in ("C", "E"):
-                        summary = backtest_ensemble(
-                            df,
-                            ensemble,
-                            conf_thresh=conf,
-                            exit_style=style,
-                            tp=None,
-                            sl=None,
-                            max_hours=MAX_HOURS_DEFAULT,
-                        )
-                        results.append(summary)
-                        bar.update(1)
-
-                # Then styles that use TP/SL (C, E)
-                for style in EXIT_STYLES:
-                    if style in ("C", "E"):
-                        for tp in TP_LEVELS:
-                            for sl in SL_LEVELS:
-                                summary = backtest_ensemble(
-                                    df,
-                                    ensemble,
-                                    conf_thresh=conf,
-                                    exit_style=style,
-                                    tp=tp,
-                                    sl=sl,
-                                    max_hours=MAX_HOURS_DEFAULT,
-                                )
-                                results.append(summary)
-                                bar.update(1)
-
-    res_df = pd.DataFrame(results)
-    res_df = res_df.sort_values("tot", ascending=False).reset_index(drop=True)
-
-    print("\n===== TOP STRATEGIES (including TP/SL) =====\n")
-    print(res_df.head(args.top_k).to_string(index=False))
+    print("\nBest strategy saved to best_strategy.json\n")
 
 
 if __name__ == "__main__":

@@ -1363,6 +1363,43 @@ _load_last_trade_results()
 def _ticker_key(ticker: str) -> str:
     return ticker.upper()
 
+
+def _evaluate_exit_rules(
+    ticker: str, position_qty: float, entry_price: float, current_price: float
+) -> tuple[bool, str]:
+    """Check TP/SL/hold limits for an open stock position.
+
+    Returns ``(should_exit, reason)`` where ``reason`` indicates which rule
+    fired.
+    """
+
+    if position_qty == 0 or entry_price <= 0 or current_price <= 0:
+        return False, "NO_POSITION"
+
+    position_side = "LONG" if position_qty > 0 else "SHORT"
+    pct_change = (
+        (current_price - entry_price) / entry_price * 100
+        if position_side == "LONG"
+        else (entry_price - current_price) / entry_price * 100
+    )
+
+    if pct_change >= 10:
+        return True, "TP_10_PERCENT"
+    if pct_change <= -1:
+        return True, "SL_1_PERCENT"
+
+    entry_meta = _OPEN_TRADES.get(_ticker_key(ticker), {})
+    opened_at = entry_meta.get("opened_at")
+    if opened_at:
+        held_hours = (
+            datetime.now(timezone.utc)
+            - datetime.fromtimestamp(opened_at, tz=timezone.utc)
+        ).total_seconds() / 3600
+        if held_hours >= 24:
+            return True, "MAX_HOLD_24H"
+
+    return False, "NO_EXIT"
+
 def _record_open_trade(
     ticker: str, side: str, quantity: int, price: float, strategy: str
 ) -> None:
@@ -1387,6 +1424,7 @@ def _record_open_trade(
         "price": float(price),
         "size": float(quantity),
         "strategy": strategy,
+        "opened_at": datetime.now(timezone.utc).timestamp(),
     }
 
 
@@ -4448,6 +4486,25 @@ def process_single_ticker(
             f"❌ Failed to get current price for {ticker} after retries: {e}\n{traceback.format_exc()}. Skipping."
         )
         return
+
+    pos_qty, avg_cost = get_position_info(ib, ticker)
+    should_exit, exit_reason = _evaluate_exit_rules(
+        ticker, pos_qty, avg_cost or 0.0, current_price
+    )
+    if should_exit:
+        logger.info(
+            "🏁 Exit rule triggered for %s (%s) at %.4f — closing position.",
+            ticker,
+            exit_reason,
+            current_price,
+        )
+        if pos_qty > 0:
+            if close_stock_position(ib, ticker, current_price, allow_after_hours=True):
+                return
+        elif pos_qty < 0:
+            if close_short_position(ib, ticker, current_price, allow_after_hours=True):
+                return
+
     market_context = market_context or fetch_iv_delta_spx(ib)
     sp500_context_default = 50.0
     spx_flag = market_context.get("spx_above_20d")

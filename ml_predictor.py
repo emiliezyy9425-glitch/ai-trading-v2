@@ -532,37 +532,37 @@ def _collect_prob_conf_vote(preds):
 
 
 def ultimate_decision(preds, ppo_meta=None):
+    """Entry logic #1 — LSTM + LGB ensemble (k = 1).
+
+    Trade when **either** LSTM or LightGBM is confident enough:
+
+    * ``lstm_conf ≥ 0.55``
+    * ``lgb_conf ≥ 0.50``
+
+    If both models fire, the higher-confidence vote is used. Otherwise the
+    firing model's direction is executed. When neither crosses its threshold we
+    hold the position.
     """
-    NUCLEAR 3-TREE UNANIMOUS RULE — THE ONE THAT MADE $7.85M FROM $10K
-    XGB ≥ 0.985 + RF ≥ 0.970 + LGB ≥ 0.975 + ALL THREE VOTE THE SAME
-    Everything else → HOLD
-    """
+
     prob, conf, vote = _collect_prob_conf_vote(preds)
 
-    # Extract the three gods
-    rf_conf = conf.get("RandomForest", 0.0)
-    xgb_conf = conf.get("XGBoost", 0.0)
+    lstm_conf = conf.get("LSTM", 0.0)
     lgb_conf = conf.get("LightGBM", 0.0)
 
-    rf_vote = vote.get("RandomForest", "Hold")
-    xgb_vote = vote.get("XGBoost", "Hold")
+    lstm_vote = vote.get("LSTM", "Hold")
     lgb_vote = vote.get("LightGBM", "Hold")
 
-    # === THE ONE AND ONLY RULE THAT MATTERS ===
-    if (
-        rf_conf >= 0.970
-        and xgb_conf >= 0.985
-        and lgb_conf >= 0.975
-        and rf_vote == xgb_vote == lgb_vote
-        and rf_vote != "Hold"  # just in case any model outputs Hold with high conf
-    ):
-        direction = rf_vote  # all three agree
-        reason = "TRIPLE_TREE_NUCLEAR"  # keep your old naming for logs
-        logger.info(
-            f"NUCLEAR TRIGGER → {direction} | "
-            f"RF:{rf_conf:.4f} XGB:{xgb_conf:.4f} LGB:{lgb_conf:.4f}"
-        )
-        return "EXECUTE", direction, reason
+    signals = []
+    if lstm_conf >= 0.55:
+        signals.append(("LSTM", lstm_vote, lstm_conf))
+    if lgb_conf >= 0.50:
+        signals.append(("LightGBM", lgb_vote, lgb_conf))
 
-    # === EVERYTHING ELSE IS SILENCE ===
-    return "HOLD", "Hold", "NO_SIGNAL"
+    if not signals:
+        return "HOLD", "Hold", "NO_SIGNAL"
+
+    # k = 1 → act on the strongest confident model when any qualifies
+    best_model, best_vote, best_conf = max(signals, key=lambda item: item[2])
+    reason = "ENTRY_LSTM_LGB_AGREE" if len(signals) > 1 else f"{best_model}_SOLO"
+
+    return "EXECUTE", best_vote, reason

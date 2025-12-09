@@ -1383,10 +1383,10 @@ def _evaluate_exit_rules(
         else (entry_price - current_price) / entry_price * 100
     )
 
-    if pct_change >= 10:
-        return True, "TP_10_PERCENT"
-    if pct_change <= -1:
-        return True, "SL_1_PERCENT"
+    if pct_change >= 17:
+        return True, "TP_17_PERCENT"
+    if pct_change <= -4:
+        return True, "SL_4_PERCENT"
 
     entry_meta = _OPEN_TRADES.get(_ticker_key(ticker), {})
     opened_at = entry_meta.get("opened_at")
@@ -1395,8 +1395,8 @@ def _evaluate_exit_rules(
             datetime.now(timezone.utc)
             - datetime.fromtimestamp(opened_at, tz=timezone.utc)
         ).total_seconds() / 3600
-        if held_hours >= 24:
-            return True, "MAX_HOLD_24H"
+        if held_hours >= 96:
+            return True, "MAX_HOLD_96H"
 
     return False, "NO_EXIT"
 

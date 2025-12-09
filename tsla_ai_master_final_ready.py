@@ -1367,7 +1367,7 @@ def _ticker_key(ticker: str) -> str:
 def _evaluate_exit_rules(
     ticker: str, position_qty: float, entry_price: float, current_price: float
 ) -> tuple[bool, str]:
-    """Check TP/SL/hold limits for an open stock position.
+    """Check TP/hold limits for an open stock position.
 
     Returns ``(should_exit, reason)`` where ``reason`` indicates which rule
     fired.
@@ -1383,10 +1383,8 @@ def _evaluate_exit_rules(
         else (entry_price - current_price) / entry_price * 100
     )
 
-    if pct_change >= 10:
-        return True, "TP_10_PERCENT"
-    if pct_change <= -1:
-        return True, "SL_1_PERCENT"
+    if pct_change >= 32:
+        return True, "TP_32_PERCENT"
 
     entry_meta = _OPEN_TRADES.get(_ticker_key(ticker), {})
     opened_at = entry_meta.get("opened_at")
@@ -1395,8 +1393,8 @@ def _evaluate_exit_rules(
             datetime.now(timezone.utc)
             - datetime.fromtimestamp(opened_at, tz=timezone.utc)
         ).total_seconds() / 3600
-        if held_hours >= 24:
-            return True, "MAX_HOLD_24H"
+        if held_hours >= 96:
+            return True, "MAX_HOLD_96H"
 
     return False, "NO_EXIT"
 
@@ -3618,6 +3616,15 @@ def execute_stock_trade_ibkr(
         else:
             profitable_position = price < avg_cost
             losing_position = price > avg_cost
+    if same_direction_as_position and losing_position:
+        logger.info(
+            "🚫 Skipping %s for %s — existing position is at a floating loss (avg %.2f vs. %.2f).",
+            decision,
+            ticker,
+            avg_cost,
+            price,
+        )
+        return False
     if same_direction_as_position and profitable_position:
         qty_equity = _calculate_pyramiding_quantity(abs(pos_qty), lot_size, price, net_liq)
         if qty_equity <= 0:
@@ -3632,24 +3639,6 @@ def execute_stock_trade_ibkr(
             ticker,
             qty_equity,
             abs(pos_qty),
-        )
-    elif same_direction_as_position and losing_position:
-        logger.info(
-            "📉 Averaging down %s position for %s — current %s shares at %.2f vs. price %.2f.",
-            "long" if pos_qty > 0 else "short",
-            ticker,
-            abs(pos_qty),
-            avg_cost,
-            price,
-        )
-        qty_equity, _ = _determine_position_size(
-            ticker,
-            price,
-            net_liq,
-            equity_fraction,
-            last_pnl,
-            last_size,
-            allow_loss_doubling=False,
         )
     elif ticker.isdigit():
         qty_equity = 100

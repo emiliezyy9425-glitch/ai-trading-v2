@@ -537,9 +537,9 @@ def ultimate_decision(preds, ppo_meta=None):
     Enter a trade when **any** of the three models produces a BUY/SELL signal
     above its confidence threshold:
 
-    * ``lstm_conf ≥ 0.50``
-    * ``lgb_conf ≥ 0.85``
-    * ``transformer_conf ≥ 0.80``
+    * ``lstm_conf ≥ 0.75``
+    * ``lgb_conf ≥ 0.90``
+    * ``transformer_conf ≥ 0.90``
 
     When multiple models qualify, execute the direction from the most confident
     model. Otherwise, hold.
@@ -556,11 +556,11 @@ def ultimate_decision(preds, ppo_meta=None):
     transformer_vote = vote.get("Transformer", "Hold")
 
     signals = []
-    if lstm_conf >= 0.50:
+    if lstm_conf >= 0.75:
         signals.append(("LSTM", lstm_vote, lstm_conf))
-    if lgb_conf >= 0.85:
+    if lgb_conf >= 0.90:
         signals.append(("LightGBM", lgb_vote, lgb_conf))
-    if transformer_conf >= 0.80:
+    if transformer_conf >= 0.90:
         signals.append(("Transformer", transformer_vote, transformer_conf))
 
     if not signals:

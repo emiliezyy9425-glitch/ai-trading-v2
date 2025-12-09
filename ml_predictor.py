@@ -532,37 +532,40 @@ def _collect_prob_conf_vote(preds):
 
 
 def ultimate_decision(preds, ppo_meta=None):
-    """Entry logic #1 — LSTM + LGB ensemble (k = 1).
+    """Live trading rule — k = 1 vote across LSTM, LightGBM, and Transformer.
 
-    Trade when **either** LSTM or LightGBM is confident enough:
+    Enter a trade when any of the core models is sufficiently confident:
 
-    * ``lstm_conf ≥ 0.55``
-    * ``lgb_conf ≥ 0.50``
+    * ``LSTM``: ``conf ≥ 0.50``
+    * ``LightGBM``: ``conf ≥ 0.85``
+    * ``Transformer``: ``conf ≥ 0.80``
 
-    If both models fire, the higher-confidence vote is used. Otherwise the
-    firing model's direction is executed. When neither crosses its threshold we
-    hold the position.
+    If multiple models fire, act on the highest-confidence vote. Otherwise the
+    first qualified model executes. When no model meets its threshold the agent
+    holds.
     """
 
     prob, conf, vote = _collect_prob_conf_vote(preds)
 
-    lstm_conf = conf.get("LSTM", 0.0)
-    lgb_conf = conf.get("LightGBM", 0.0)
+    model_thresholds = {
+        "LSTM": 0.50,
+        "LightGBM": 0.85,
+        "Transformer": 0.80,
+    }
 
-    lstm_vote = vote.get("LSTM", "Hold")
-    lgb_vote = vote.get("LightGBM", "Hold")
+    signals: list[tuple[str, str, float]] = []
+    for model_name, threshold in model_thresholds.items():
+        model_conf = conf.get(model_name, 0.0)
+        model_vote = vote.get(model_name, "Hold")
 
-    signals = []
-    if lstm_conf >= 0.55:
-        signals.append(("LSTM", lstm_vote, lstm_conf))
-    if lgb_conf >= 0.50:
-        signals.append(("LightGBM", lgb_vote, lgb_conf))
+        if model_conf >= threshold:
+            signals.append((model_name, model_vote, model_conf))
 
     if not signals:
         return "HOLD", "Hold", "NO_SIGNAL"
 
     # k = 1 → act on the strongest confident model when any qualifies
     best_model, best_vote, best_conf = max(signals, key=lambda item: item[2])
-    reason = "ENTRY_LSTM_LGB_AGREE" if len(signals) > 1 else f"{best_model}_SOLO"
+    reason = "ENTRY_MULTI_MODEL_AGREE" if len(signals) > 1 else f"{best_model}_SOLO"
 
     return "EXECUTE", best_vote, reason

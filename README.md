@@ -36,6 +36,26 @@ The live deployment follows the same cadence used by discretionary desks that re
 
 Adjust the cron jobs (`hourly_cronjob.txt`, `weekly_cronjob.txt`, etc.) if you need to shift the operating window for a different exchange or timezone.
 
+### Live trading rule
+
+**Models and thresholds**
+
+The live loop listens to three core models:
+
+* **LSTM:** confidence ≥ **0.50**
+* **LightGBM:** confidence ≥ **0.85**
+* **Transformer:** confidence ≥ **0.80**
+
+Enter a trade when **any one** of these models produces a BUY/SELL signal above its threshold. If multiple models qualify in the same tick, the highest-confidence vote wins.
+
+**Exit logic**
+
+Open positions exit at the earliest of these triggers:
+
+* **Take profit:** gain of roughly **+17%** (`tp = 0.17`).
+* **Stop loss:** drawdown of roughly **−4%** (`sl = 0.04`).
+* **Max hold:** position open for **96 hours** (`max_hold = 96.0`), recorded as a `max_96h` forced exit.
+
 ## Installation
 
 Clone the repository and install dependencies in a virtual environment:

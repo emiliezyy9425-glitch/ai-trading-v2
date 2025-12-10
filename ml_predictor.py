@@ -532,42 +532,108 @@ def _collect_prob_conf_vote(preds):
 
 
 def ultimate_decision(preds, ppo_meta=None):
-    """Entry logic — LSTM / LightGBM / Transformer (k = 1).
+    """Entry logic — ordered ladder across LSTM, Transformer, trees.
 
-    Enter a trade when **any** of the three models produces a BUY/SELL signal
-    above its confidence threshold:
+    Evaluate models against the following descending confidence ladder; the first
+    model to clear its threshold controls the trade:
 
-    * ``lstm_conf ≥ 0.75``
-    * ``lgb_conf ≥ 0.90``
-    * ``transformer_conf ≥ 0.90``
+    * LSTM: 1.00
+    * RandomForest: 0.86, 0.87, 0.85, 0.88
+    * Transformer: 0.92
+    * RandomForest: 0.83, 0.80, 0.81, 0.84, 0.82, 0.79
+    * XGBoost: 0.97
+    * RandomForest: 0.89
+    * XGBoost: 0.98
+    * RandomForest: 0.78, 0.77
+    * XGBoost: 0.96, 0.95
+    * RandomForest: 0.76
+    * XGBoost: 0.99
+    * RandomForest: 0.75
+    * XGBoost: 0.94
+    * RandomForest: 0.74
+    * XGBoost: 0.93, 0.92
+    * RandomForest: 0.73
+    * XGBoost: 0.91
+    * RandomForest: 0.72
+    * XGBoost: 0.90, 0.88, 0.89
+    * RandomForest: 0.71
+    * XGBoost: 0.87, 0.86, 0.85
+    * Transformer: 0.90
+    * RandomForest: 0.70
+    * XGBoost: 0.84, 0.83, 0.82, 0.81
+    * RandomForest: 0.69
+    * Transformer: 0.87
+    * XGBoost: 0.80, 0.79, 0.78
+    * RandomForest: 0.68
+    * Transformer: 0.86, 0.89
+    * XGBoost: 0.77
+    * Transformer: 0.88
+    * XGBoost: 0.76, 0.75, 0.74
+    * RandomForest: 0.67
+    * XGBoost: 0.73, 0.72
+    * Transformer: 0.85
+    * XGBoost: 0.71
+    * Transformer: 0.93
+    * RandomForest: 0.66
+    * XGBoost: 0.70, 0.69, 0.68
+    * RandomForest: 0.65
+    * XGBoost: 0.67, 0.66, 0.65
+    * RandomForest: 0.64
+    * XGBoost: 0.63, 0.62
+    * RandomForest: 0.63
+    * XGBoost: 0.61, 0.60, 0.59, 0.58
+    * RandomForest: 0.62
+    * XGBoost: 0.57, 0.56, 0.55
+    * RandomForest: 0.61
+    * XGBoost: 0.54, 0.53, 0.52
+    * RandomForest: 0.60
+    * XGBoost: 0.51, 0.50
+    * LSTM: 0.98
+    * Transformer: 0.84
+    * RandomForest: 0.59, 0.58
+    * Transformer: 0.91
+    * LightGBM: 0.71
+    * RandomForest: 0.57
+    * LightGBM: 0.72, 0.82
+    * RandomForest: 0.56
+    * LightGBM: 0.67
 
-    When multiple models qualify, execute the direction from the most confident
-    model. Otherwise, hold.
+    If none qualify, hold.
     """
 
-    prob, conf, vote = _collect_prob_conf_vote(preds)
+    _, conf, vote = _collect_prob_conf_vote(preds)
 
-    lstm_conf = conf.get("LSTM", 0.0)
-    lgb_conf = conf.get("LightGBM", 0.0)
-    transformer_conf = conf.get("Transformer", 0.0)
+    ladder = [
+        ("LSTM", 1.00), ("RandomForest", 0.86), ("RandomForest", 0.87), ("RandomForest", 0.85),
+        ("RandomForest", 0.88), ("Transformer", 0.92), ("RandomForest", 0.83), ("RandomForest", 0.80),
+        ("RandomForest", 0.81), ("RandomForest", 0.84), ("RandomForest", 0.82), ("RandomForest", 0.79),
+        ("XGBoost", 0.97), ("RandomForest", 0.89), ("XGBoost", 0.98), ("RandomForest", 0.78),
+        ("RandomForest", 0.77), ("XGBoost", 0.96), ("XGBoost", 0.95), ("RandomForest", 0.76),
+        ("XGBoost", 0.99), ("RandomForest", 0.75), ("XGBoost", 0.94), ("RandomForest", 0.74),
+        ("XGBoost", 0.93), ("XGBoost", 0.92), ("RandomForest", 0.73), ("XGBoost", 0.91),
+        ("RandomForest", 0.72), ("XGBoost", 0.90), ("XGBoost", 0.88), ("XGBoost", 0.89),
+        ("RandomForest", 0.71), ("XGBoost", 0.87), ("XGBoost", 0.86), ("XGBoost", 0.85),
+        ("Transformer", 0.90), ("RandomForest", 0.70), ("XGBoost", 0.84), ("XGBoost", 0.83),
+        ("XGBoost", 0.82), ("XGBoost", 0.81), ("RandomForest", 0.69), ("Transformer", 0.87),
+        ("XGBoost", 0.80), ("XGBoost", 0.79), ("XGBoost", 0.78), ("RandomForest", 0.68),
+        ("Transformer", 0.86), ("Transformer", 0.89), ("XGBoost", 0.77), ("Transformer", 0.88),
+        ("XGBoost", 0.76), ("XGBoost", 0.75), ("XGBoost", 0.74), ("RandomForest", 0.67),
+        ("XGBoost", 0.73), ("XGBoost", 0.72), ("Transformer", 0.85), ("XGBoost", 0.71),
+        ("Transformer", 0.93), ("RandomForest", 0.66), ("XGBoost", 0.70), ("XGBoost", 0.69),
+        ("XGBoost", 0.68), ("RandomForest", 0.65), ("XGBoost", 0.67), ("XGBoost", 0.66),
+        ("XGBoost", 0.65), ("RandomForest", 0.64), ("XGBoost", 0.63), ("XGBoost", 0.62),
+        ("RandomForest", 0.63), ("XGBoost", 0.61), ("XGBoost", 0.60), ("XGBoost", 0.59),
+        ("XGBoost", 0.58), ("RandomForest", 0.62), ("XGBoost", 0.57), ("XGBoost", 0.56),
+        ("XGBoost", 0.55), ("RandomForest", 0.61), ("XGBoost", 0.54), ("XGBoost", 0.53),
+        ("XGBoost", 0.52), ("RandomForest", 0.60), ("XGBoost", 0.51), ("XGBoost", 0.50),
+        ("LSTM", 0.98), ("Transformer", 0.84), ("RandomForest", 0.59), ("RandomForest", 0.58),
+        ("Transformer", 0.91), ("LightGBM", 0.71), ("RandomForest", 0.57), ("LightGBM", 0.72),
+        ("LightGBM", 0.82), ("RandomForest", 0.56), ("LightGBM", 0.67),
+    ]
 
-    lstm_vote = vote.get("LSTM", "Hold")
-    lgb_vote = vote.get("LightGBM", "Hold")
-    transformer_vote = vote.get("Transformer", "Hold")
+    for model_name, threshold in ladder:
+        model_conf = conf.get(model_name, 0.0)
+        if model_conf >= threshold:
+            return "EXECUTE", vote.get(model_name, "Hold"), f"{model_name.upper()}_{threshold}"
 
-    signals = []
-    if lstm_conf >= 0.75:
-        signals.append(("LSTM", lstm_vote, lstm_conf))
-    if lgb_conf >= 0.90:
-        signals.append(("LightGBM", lgb_vote, lgb_conf))
-    if transformer_conf >= 0.90:
-        signals.append(("Transformer", transformer_vote, transformer_conf))
-
-    if not signals:
-        return "HOLD", "Hold", "NO_SIGNAL"
-
-    # k = 1 → act on the strongest confident model when any qualifies
-    best_model, best_vote, best_conf = max(signals, key=lambda item: item[2])
-    reason = "ENTRY_MULTI_MODEL" if len(signals) > 1 else f"{best_model}_SOLO"
-
-    return "EXECUTE", best_vote, reason
+    return "HOLD", "Hold", "NO_SIGNAL"

@@ -1367,7 +1367,7 @@ def _ticker_key(ticker: str) -> str:
 def _evaluate_exit_rules(
     ticker: str, position_qty: float, entry_price: float, current_price: float
 ) -> tuple[bool, str]:
-    """Check TP/SL/hold limits for an open stock position.
+    """Check TP/hold limits for an open stock position.
 
     Returns ``(should_exit, reason)`` where ``reason`` indicates which rule
     fired.
@@ -1383,10 +1383,8 @@ def _evaluate_exit_rules(
         else (entry_price - current_price) / entry_price * 100
     )
 
-    if pct_change >= 10:
-        return True, "TP_10_PERCENT"
-    if pct_change <= -1:
-        return True, "SL_1_PERCENT"
+    if pct_change >= 32:
+        return True, "TP_32_PERCENT"
 
     entry_meta = _OPEN_TRADES.get(_ticker_key(ticker), {})
     opened_at = entry_meta.get("opened_at")
@@ -1395,8 +1393,8 @@ def _evaluate_exit_rules(
             datetime.now(timezone.utc)
             - datetime.fromtimestamp(opened_at, tz=timezone.utc)
         ).total_seconds() / 3600
-        if held_hours >= 24:
-            return True, "MAX_HOLD_24H"
+        if held_hours >= 96:
+            return True, "MAX_HOLD_96H"
 
     return False, "NO_EXIT"
 
@@ -3568,6 +3566,7 @@ def execute_stock_trade_ibkr(
     *,
     equity_fraction: Optional[float] = None,
     source_label: str = "ML_STOCK",
+    price_above_ema10_1d: bool | None = None,
 ) -> bool:
     """Execute a stock trade sized to a fraction of account equity.
     By default the function targets ``1%`` of total equity per trade. Hong Kong
@@ -3599,6 +3598,8 @@ def execute_stock_trade_ibkr(
             logger.debug("Failed trading session check: %s", exc)
 
     pos_qty, avg_cost = get_position_info(ib, ticker)
+    above_ema10 = bool(price_above_ema10_1d)
+    below_ema10 = not above_ema10
     try:
         net_liq = get_net_liquidity(ib) or 0.0
     except Exception as e:
@@ -3609,15 +3610,73 @@ def execute_stock_trade_ibkr(
     same_direction_as_position = (decision == "BUY" and pos_qty > 0) or (
         decision == "SELL" and pos_qty < 0
     )
-    profitable_position = False
-    losing_position = False
-    if pos_qty != 0 and avg_cost > 0:
-        if pos_qty > 0:
-            profitable_position = price > avg_cost
-            losing_position = price < avg_cost
-        else:
-            profitable_position = price < avg_cost
-            losing_position = price > avg_cost
+    def _refresh_position_flags() -> tuple[bool, bool]:
+        profitable = False
+        losing = False
+        if pos_qty != 0 and avg_cost > 0:
+            if pos_qty > 0:
+                profitable = price > avg_cost
+                losing = price < avg_cost
+            else:
+                profitable = price < avg_cost
+                losing = price > avg_cost
+        return profitable, losing
+
+    profitable_position, losing_position = _refresh_position_flags()
+    if decision == "SELL" and pos_qty > 0 and profitable_position:
+        logger.info(
+            "🏁 Closing profitable long for %s after SELL decision (avg %.2f vs. %.2f).",
+            ticker,
+            avg_cost,
+            price,
+        )
+        if not close_stock_position(ib, ticker, price):
+            logger.warning("⚠️ Failed to close profitable long for %s.", ticker)
+        pos_qty, avg_cost = get_position_info(ib, ticker)
+        same_direction_as_position = (decision == "BUY" and pos_qty > 0) or (
+            decision == "SELL" and pos_qty < 0
+        )
+        profitable_position, losing_position = _refresh_position_flags()
+    if decision == "BUY" and pos_qty < 0 and profitable_position:
+        logger.info(
+            "🏁 Closing profitable short for %s after BUY decision (avg %.2f vs. %.2f).",
+            ticker,
+            avg_cost,
+            price,
+        )
+        if not close_short_position(ib, ticker, price):
+            logger.warning("⚠️ Failed to close profitable short for %s.", ticker)
+        pos_qty, avg_cost = get_position_info(ib, ticker)
+        same_direction_as_position = (decision == "BUY" and pos_qty > 0) or (
+            decision == "SELL" and pos_qty < 0
+        )
+        profitable_position, losing_position = _refresh_position_flags()
+
+    if same_direction_as_position and losing_position:
+        logger.info(
+            "🚫 Skipping %s for %s — existing position is at a floating loss (avg %.2f vs. %.2f).",
+            decision,
+            ticker,
+            avg_cost,
+            price,
+        )
+        return False
+
+    if decision == "BUY" and not above_ema10:
+        logger.info(
+            "🚫 Skipping BUY for %s — price %.2f is not above 10-day EMA condition.",
+            ticker,
+            price,
+        )
+        return False
+
+    if decision == "SELL" and above_ema10:
+        logger.info(
+            "🚫 Skipping SELL for %s — price %.2f is above 10-day EMA condition for shorts.",
+            ticker,
+            price,
+        )
+        return False
     if same_direction_as_position and profitable_position:
         qty_equity = _calculate_pyramiding_quantity(abs(pos_qty), lot_size, price, net_liq)
         if qty_equity <= 0:
@@ -3632,24 +3691,6 @@ def execute_stock_trade_ibkr(
             ticker,
             qty_equity,
             abs(pos_qty),
-        )
-    elif same_direction_as_position and losing_position:
-        logger.info(
-            "📉 Averaging down %s position for %s — current %s shares at %.2f vs. price %.2f.",
-            "long" if pos_qty > 0 else "short",
-            ticker,
-            abs(pos_qty),
-            avg_cost,
-            price,
-        )
-        qty_equity, _ = _determine_position_size(
-            ticker,
-            price,
-            net_liq,
-            equity_fraction,
-            last_pnl,
-            last_size,
-            allow_loss_doubling=False,
         )
     elif ticker.isdigit():
         qty_equity = 100
@@ -3725,6 +3766,14 @@ def execute_stock_trade_ibkr(
     if qty_equity <= 0:
         logger.info("Calculated quantity 0; skipping short sell.")
         return False
+    if not below_ema10:
+        logger.info(
+            "🚫 Skipping open short for %s — price %.2f is not below 10-day EMA condition.",
+            ticker,
+            price,
+        )
+        return False
+
     return open_short_position(
         ib,
         ticker,
@@ -4683,6 +4732,21 @@ def process_single_ticker(
     price_above_ema10_1d = _get_indicator_value(
         "price_above_ema10", "1 day", False, "price_above_ema10_1d"
     )
+
+    if price_above_ema10_1d and pos_qty < 0:
+        logger.info(
+            "📈 Price above 10-day EMA — closing short position for %s before new decisions.",
+            ticker,
+        )
+        if close_short_position(ib, ticker, current_price, allow_after_hours=True):
+            pos_qty, avg_cost = get_position_info(ib, ticker)
+    if (not price_above_ema10_1d) and pos_qty > 0:
+        logger.info(
+            "📉 Price below 10-day EMA — closing long position for %s before new decisions.",
+            ticker,
+        )
+        if close_stock_position(ib, ticker, current_price, allow_after_hours=True):
+            pos_qty, avg_cost = get_position_info(ib, ticker)
     bollinger_1d = _get_indicator_value(
         "bollinger",
         "1 day",
@@ -5209,6 +5273,7 @@ def process_single_ticker(
             current_price,
             equity_fraction=stock_equity_fraction,
             source_label=stock_trade_source,
+            price_above_ema10_1d=bool(price_above_ema10_1d),
         )
     else:
         logger.info(

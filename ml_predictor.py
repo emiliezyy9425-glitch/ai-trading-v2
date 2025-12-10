@@ -532,37 +532,34 @@ def _collect_prob_conf_vote(preds):
 
 
 def ultimate_decision(preds, ppo_meta=None):
-    """Entry logic #1 — LSTM + LGB ensemble (k = 1).
+    """Entry logic — tree-ensemble priority.
 
-    Trade when **either** LSTM or LightGBM is confident enough:
+    Enter a trade only when one of the tree models emits a BUY/SELL signal above
+    its confidence threshold, honoring this priority order:
 
-    * ``lstm_conf ≥ 0.55``
-    * ``lgb_conf ≥ 0.50``
+    * RandomForest: ``conf ≥ 0.76``
+    * XGBoost: ``conf ≥ 0.59``
+    * LightGBM: ``conf ≥ 0.51``
 
-    If both models fire, the higher-confidence vote is used. Otherwise the
-    firing model's direction is executed. When neither crosses its threshold we
-    hold the position.
+    The first model in the list to meet its threshold drives the decision;
+    otherwise hold.
     """
 
-    prob, conf, vote = _collect_prob_conf_vote(preds)
+    _, conf, vote = _collect_prob_conf_vote(preds)
 
-    lstm_conf = conf.get("LSTM", 0.0)
+    rf_conf = conf.get("RandomForest", 0.0)
+    xgb_conf = conf.get("XGBoost", 0.0)
     lgb_conf = conf.get("LightGBM", 0.0)
 
-    lstm_vote = vote.get("LSTM", "Hold")
+    rf_vote = vote.get("RandomForest", "Hold")
+    xgb_vote = vote.get("XGBoost", "Hold")
     lgb_vote = vote.get("LightGBM", "Hold")
 
-    signals = []
-    if lstm_conf >= 0.55:
-        signals.append(("LSTM", lstm_vote, lstm_conf))
-    if lgb_conf >= 0.50:
-        signals.append(("LightGBM", lgb_vote, lgb_conf))
+    if rf_conf >= 0.76:
+        return "EXECUTE", rf_vote, "RF_SOLO"
+    if xgb_conf >= 0.59:
+        return "EXECUTE", xgb_vote, "XGB_SOLO"
+    if lgb_conf >= 0.51:
+        return "EXECUTE", lgb_vote, "LGB_SOLO"
 
-    if not signals:
-        return "HOLD", "Hold", "NO_SIGNAL"
-
-    # k = 1 → act on the strongest confident model when any qualifies
-    best_model, best_vote, best_conf = max(signals, key=lambda item: item[2])
-    reason = "ENTRY_LSTM_LGB_AGREE" if len(signals) > 1 else f"{best_model}_SOLO"
-
-    return "EXECUTE", best_vote, reason
+    return "HOLD", "Hold", "NO_SIGNAL"

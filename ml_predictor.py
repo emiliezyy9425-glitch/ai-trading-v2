@@ -532,34 +532,109 @@ def _collect_prob_conf_vote(preds):
 
 
 def ultimate_decision(preds, ppo_meta=None):
-    """Entry logic — tree-ensemble priority.
+    """Entry logic — ordered ladder of tree thresholds.
 
-    Enter a trade only when one of the tree models emits a BUY/SELL signal above
-    its confidence threshold, honoring this priority order:
+    Evaluate tree models against a descending confidence ladder; the first model
+    to clear its threshold controls the trade. Priority (top → bottom):
 
-    * RandomForest: ``conf ≥ 0.76``
-    * XGBoost: ``conf ≥ 0.59``
-    * LightGBM: ``conf ≥ 0.51``
+    * XGBoost: 0.98, 0.97
+    * RandomForest: 0.82
+    * XGBoost: 0.96
+    * RandomForest: 0.81, 0.80, 0.79
+    * XGBoost: 0.95
+    * RandomForest: 0.78, 0.77, 0.76, 0.75, 0.74
+    * XGBoost: 0.94
+    * RandomForest: 0.73
+    * XGBoost: 0.93
+    * RandomForest: 0.72
+    * XGBoost: 0.92
+    * RandomForest: 0.71
+    * XGBoost: 0.91
+    * RandomForest: 0.70
+    * XGBoost: 0.90
+    * RandomForest: 0.69
+    * XGBoost: 0.89
+    * RandomForest: 0.68
+    * XGBoost: 0.88
+    * RandomForest: 0.67
+    * XGBoost: 0.87
+    * RandomForest: 0.66
+    * XGBoost: 0.86
+    * RandomForest: 0.65
+    * XGBoost: 0.85
+    * RandomForest: 0.64
+    * XGBoost: 0.84
+    * RandomForest: 0.63, 0.62, 0.61
+    * XGBoost: 0.81, 0.80, 0.79
+    * RandomForest: 0.60
+    * XGBoost: 0.78
+    * LightGBM: 0.67
+    * XGBoost: 0.77, 0.76
+    * RandomForest: 0.59
+    * XGBoost: 0.75, 0.74
+    * LightGBM: 0.66
+    * XGBoost: 0.73, 0.72, 0.71, 0.70
+    * LightGBM: 0.64, 0.63
+    * XGBoost: 0.69, 0.68
+    * LightGBM: 0.62
+    * XGBoost: 0.67, 0.66, 0.65
+    * LightGBM: 0.61
+    * XGBoost: 0.64, 0.63
+    * LightGBM: 0.60
+    * XGBoost: 0.62, 0.61, 0.60
+    * LightGBM: 0.59
+    * XGBoost: 0.59, 0.58
+    * LightGBM: 0.58
+    * XGBoost: 0.57
+    * LightGBM: 0.57
+    * XGBoost: 0.56
+    * LightGBM: 0.56
+    * XGBoost: 0.55
+    * LightGBM: 0.55
+    * XGBoost: 0.54
+    * LightGBM: 0.54
+    * XGBoost: 0.53
+    * LightGBM: 0.53
+    * XGBoost: 0.52
+    * LightGBM: 0.52
+    * XGBoost: 0.51
+    * LightGBM: 0.51
+    * XGBoost: 0.50
+    * LightGBM: 0.50
 
-    The first model in the list to meet its threshold drives the decision;
-    otherwise hold.
+    If none qualify, hold.
     """
 
     _, conf, vote = _collect_prob_conf_vote(preds)
 
-    rf_conf = conf.get("RandomForest", 0.0)
-    xgb_conf = conf.get("XGBoost", 0.0)
-    lgb_conf = conf.get("LightGBM", 0.0)
+    ladder = [
+        ("XGBoost", 0.98), ("XGBoost", 0.97), ("RandomForest", 0.82), ("XGBoost", 0.96),
+        ("RandomForest", 0.81), ("RandomForest", 0.80), ("RandomForest", 0.79), ("XGBoost", 0.95),
+        ("RandomForest", 0.78), ("RandomForest", 0.77), ("RandomForest", 0.76), ("RandomForest", 0.75),
+        ("RandomForest", 0.74), ("XGBoost", 0.94), ("RandomForest", 0.73), ("XGBoost", 0.93),
+        ("RandomForest", 0.72), ("XGBoost", 0.92), ("RandomForest", 0.71), ("XGBoost", 0.91),
+        ("RandomForest", 0.70), ("XGBoost", 0.90), ("RandomForest", 0.69), ("XGBoost", 0.89),
+        ("RandomForest", 0.68), ("XGBoost", 0.88), ("RandomForest", 0.67), ("XGBoost", 0.87),
+        ("RandomForest", 0.66), ("XGBoost", 0.86), ("RandomForest", 0.65), ("XGBoost", 0.85),
+        ("RandomForest", 0.64), ("XGBoost", 0.84), ("RandomForest", 0.63), ("RandomForest", 0.62),
+        ("RandomForest", 0.61), ("XGBoost", 0.81), ("XGBoost", 0.80), ("XGBoost", 0.79),
+        ("RandomForest", 0.60), ("XGBoost", 0.78), ("LightGBM", 0.67), ("XGBoost", 0.77),
+        ("XGBoost", 0.76), ("RandomForest", 0.59), ("XGBoost", 0.75), ("XGBoost", 0.74),
+        ("LightGBM", 0.66), ("XGBoost", 0.73), ("XGBoost", 0.72), ("XGBoost", 0.71),
+        ("XGBoost", 0.70), ("LightGBM", 0.64), ("LightGBM", 0.63), ("XGBoost", 0.69),
+        ("XGBoost", 0.68), ("LightGBM", 0.62), ("XGBoost", 0.67), ("XGBoost", 0.66),
+        ("XGBoost", 0.65), ("LightGBM", 0.61), ("XGBoost", 0.64), ("XGBoost", 0.63),
+        ("LightGBM", 0.60), ("XGBoost", 0.62), ("XGBoost", 0.61), ("XGBoost", 0.60),
+        ("LightGBM", 0.59), ("XGBoost", 0.59), ("XGBoost", 0.58), ("LightGBM", 0.58),
+        ("XGBoost", 0.57), ("LightGBM", 0.57), ("XGBoost", 0.56), ("LightGBM", 0.56),
+        ("XGBoost", 0.55), ("LightGBM", 0.55), ("XGBoost", 0.54), ("LightGBM", 0.54),
+        ("XGBoost", 0.53), ("LightGBM", 0.53), ("XGBoost", 0.52), ("LightGBM", 0.52),
+        ("XGBoost", 0.51), ("LightGBM", 0.51), ("XGBoost", 0.50), ("LightGBM", 0.50),
+    ]
 
-    rf_vote = vote.get("RandomForest", "Hold")
-    xgb_vote = vote.get("XGBoost", "Hold")
-    lgb_vote = vote.get("LightGBM", "Hold")
-
-    if rf_conf >= 0.76:
-        return "EXECUTE", rf_vote, "RF_SOLO"
-    if xgb_conf >= 0.59:
-        return "EXECUTE", xgb_vote, "XGB_SOLO"
-    if lgb_conf >= 0.51:
-        return "EXECUTE", lgb_vote, "LGB_SOLO"
+    for model_name, threshold in ladder:
+        model_conf = conf.get(model_name, 0.0)
+        if model_conf >= threshold:
+            return "EXECUTE", vote.get(model_name, "Hold"), f"{model_name.upper()}_{threshold}"
 
     return "HOLD", "Hold", "NO_SIGNAL"

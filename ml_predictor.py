@@ -532,37 +532,42 @@ def _collect_prob_conf_vote(preds):
 
 
 def ultimate_decision(preds, ppo_meta=None):
-    """Entry logic #1 — LSTM + LGB ensemble (k = 1).
+    """Entry logic — LSTM / LightGBM / Transformer (k = 1).
 
-    Trade when **either** LSTM or LightGBM is confident enough:
+    Enter a trade when **any** of the three models produces a BUY/SELL signal
+    above its confidence threshold:
 
-    * ``lstm_conf ≥ 0.55``
-    * ``lgb_conf ≥ 0.50``
+    * ``lstm_conf ≥ 0.75``
+    * ``lgb_conf ≥ 0.90``
+    * ``transformer_conf ≥ 0.90``
 
-    If both models fire, the higher-confidence vote is used. Otherwise the
-    firing model's direction is executed. When neither crosses its threshold we
-    hold the position.
+    When multiple models qualify, execute the direction from the most confident
+    model. Otherwise, hold.
     """
 
     prob, conf, vote = _collect_prob_conf_vote(preds)
 
     lstm_conf = conf.get("LSTM", 0.0)
     lgb_conf = conf.get("LightGBM", 0.0)
+    transformer_conf = conf.get("Transformer", 0.0)
 
     lstm_vote = vote.get("LSTM", "Hold")
     lgb_vote = vote.get("LightGBM", "Hold")
+    transformer_vote = vote.get("Transformer", "Hold")
 
     signals = []
-    if lstm_conf >= 0.55:
+    if lstm_conf >= 0.75:
         signals.append(("LSTM", lstm_vote, lstm_conf))
-    if lgb_conf >= 0.50:
+    if lgb_conf >= 0.90:
         signals.append(("LightGBM", lgb_vote, lgb_conf))
+    if transformer_conf >= 0.90:
+        signals.append(("Transformer", transformer_vote, transformer_conf))
 
     if not signals:
         return "HOLD", "Hold", "NO_SIGNAL"
 
     # k = 1 → act on the strongest confident model when any qualifies
     best_model, best_vote, best_conf = max(signals, key=lambda item: item[2])
-    reason = "ENTRY_LSTM_LGB_AGREE" if len(signals) > 1 else f"{best_model}_SOLO"
+    reason = "ENTRY_MULTI_MODEL" if len(signals) > 1 else f"{best_model}_SOLO"
 
     return "EXECUTE", best_vote, reason

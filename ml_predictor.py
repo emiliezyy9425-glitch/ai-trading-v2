@@ -532,75 +532,71 @@ def _collect_prob_conf_vote(preds):
 
 
 def ultimate_decision(preds, ppo_meta=None):
-    """Entry logic — ordered ladder of tree thresholds.
+    """Entry logic — ordered ladder across LSTM, Transformer, trees.
 
-    Evaluate tree models against a descending confidence ladder; the first model
-    to clear its threshold controls the trade. Priority (top → bottom):
+    Evaluate models against the following descending confidence ladder; the first
+    model to clear its threshold controls the trade:
 
-    * XGBoost: 0.98, 0.97
-    * RandomForest: 0.82
-    * XGBoost: 0.96
-    * RandomForest: 0.81, 0.80, 0.79
-    * XGBoost: 0.95
-    * RandomForest: 0.78, 0.77, 0.76, 0.75, 0.74
+    * LSTM: 1.00
+    * RandomForest: 0.86, 0.87, 0.85, 0.88
+    * Transformer: 0.92
+    * RandomForest: 0.83, 0.80, 0.81, 0.84, 0.82, 0.79
+    * XGBoost: 0.97
+    * RandomForest: 0.89
+    * XGBoost: 0.98
+    * RandomForest: 0.78, 0.77
+    * XGBoost: 0.96, 0.95
+    * RandomForest: 0.76
+    * XGBoost: 0.99
+    * RandomForest: 0.75
     * XGBoost: 0.94
+    * RandomForest: 0.74
+    * XGBoost: 0.93, 0.92
     * RandomForest: 0.73
-    * XGBoost: 0.93
-    * RandomForest: 0.72
-    * XGBoost: 0.92
-    * RandomForest: 0.71
     * XGBoost: 0.91
+    * RandomForest: 0.72
+    * XGBoost: 0.90, 0.88, 0.89
+    * RandomForest: 0.71
+    * XGBoost: 0.87, 0.86, 0.85
+    * Transformer: 0.90
     * RandomForest: 0.70
-    * XGBoost: 0.90
+    * XGBoost: 0.84, 0.83, 0.82, 0.81
     * RandomForest: 0.69
-    * XGBoost: 0.89
+    * Transformer: 0.87
+    * XGBoost: 0.80, 0.79, 0.78
     * RandomForest: 0.68
-    * XGBoost: 0.88
+    * Transformer: 0.86, 0.89
+    * XGBoost: 0.77
+    * Transformer: 0.88
+    * XGBoost: 0.76, 0.75, 0.74
     * RandomForest: 0.67
-    * XGBoost: 0.87
+    * XGBoost: 0.73, 0.72
+    * Transformer: 0.85
+    * XGBoost: 0.71
+    * Transformer: 0.93
     * RandomForest: 0.66
-    * XGBoost: 0.86
+    * XGBoost: 0.70, 0.69, 0.68
     * RandomForest: 0.65
-    * XGBoost: 0.85
-    * RandomForest: 0.64
-    * XGBoost: 0.84
-    * RandomForest: 0.63, 0.62, 0.61
-    * XGBoost: 0.81, 0.80, 0.79
-    * RandomForest: 0.60
-    * XGBoost: 0.78
-    * LightGBM: 0.67
-    * XGBoost: 0.77, 0.76
-    * RandomForest: 0.59
-    * XGBoost: 0.75, 0.74
-    * LightGBM: 0.66
-    * XGBoost: 0.73, 0.72, 0.71, 0.70
-    * LightGBM: 0.64, 0.63
-    * XGBoost: 0.69, 0.68
-    * LightGBM: 0.62
     * XGBoost: 0.67, 0.66, 0.65
-    * LightGBM: 0.61
-    * XGBoost: 0.64, 0.63
-    * LightGBM: 0.60
-    * XGBoost: 0.62, 0.61, 0.60
-    * LightGBM: 0.59
-    * XGBoost: 0.59, 0.58
-    * LightGBM: 0.58
-    * XGBoost: 0.57
-    * LightGBM: 0.57
-    * XGBoost: 0.56
-    * LightGBM: 0.56
-    * XGBoost: 0.55
-    * LightGBM: 0.55
-    * XGBoost: 0.54
-    * LightGBM: 0.54
-    * XGBoost: 0.53
-    * LightGBM: 0.53
-    * XGBoost: 0.52
-    * LightGBM: 0.52
-    * XGBoost: 0.51
-    * LightGBM: 0.51
-    * XGBoost: 0.50
-    * LightGBM: 0.50
+    * RandomForest: 0.64
+    * XGBoost: 0.63, 0.62
+    * RandomForest: 0.63
+    * XGBoost: 0.61, 0.60, 0.59, 0.58
+    * RandomForest: 0.62
+    * XGBoost: 0.57, 0.56, 0.55
+    * RandomForest: 0.61
+    * XGBoost: 0.54, 0.53, 0.52
+    * RandomForest: 0.60
+    * XGBoost: 0.51, 0.50
+    * LSTM: 0.98
+    * Transformer: 0.84
+    * RandomForest: 0.59, 0.58
+    * Transformer: 0.91
+    * LightGBM: 0.71
+    * RandomForest: 0.57
+    * LightGBM: 0.72, 0.82
+    * RandomForest: 0.56
+    * LightGBM: 0.67
 
     If none qualify, hold.
     """
@@ -608,28 +604,31 @@ def ultimate_decision(preds, ppo_meta=None):
     _, conf, vote = _collect_prob_conf_vote(preds)
 
     ladder = [
-        ("XGBoost", 0.98), ("XGBoost", 0.97), ("RandomForest", 0.82), ("XGBoost", 0.96),
-        ("RandomForest", 0.81), ("RandomForest", 0.80), ("RandomForest", 0.79), ("XGBoost", 0.95),
-        ("RandomForest", 0.78), ("RandomForest", 0.77), ("RandomForest", 0.76), ("RandomForest", 0.75),
-        ("RandomForest", 0.74), ("XGBoost", 0.94), ("RandomForest", 0.73), ("XGBoost", 0.93),
-        ("RandomForest", 0.72), ("XGBoost", 0.92), ("RandomForest", 0.71), ("XGBoost", 0.91),
-        ("RandomForest", 0.70), ("XGBoost", 0.90), ("RandomForest", 0.69), ("XGBoost", 0.89),
-        ("RandomForest", 0.68), ("XGBoost", 0.88), ("RandomForest", 0.67), ("XGBoost", 0.87),
-        ("RandomForest", 0.66), ("XGBoost", 0.86), ("RandomForest", 0.65), ("XGBoost", 0.85),
-        ("RandomForest", 0.64), ("XGBoost", 0.84), ("RandomForest", 0.63), ("RandomForest", 0.62),
-        ("RandomForest", 0.61), ("XGBoost", 0.81), ("XGBoost", 0.80), ("XGBoost", 0.79),
-        ("RandomForest", 0.60), ("XGBoost", 0.78), ("LightGBM", 0.67), ("XGBoost", 0.77),
-        ("XGBoost", 0.76), ("RandomForest", 0.59), ("XGBoost", 0.75), ("XGBoost", 0.74),
-        ("LightGBM", 0.66), ("XGBoost", 0.73), ("XGBoost", 0.72), ("XGBoost", 0.71),
-        ("XGBoost", 0.70), ("LightGBM", 0.64), ("LightGBM", 0.63), ("XGBoost", 0.69),
-        ("XGBoost", 0.68), ("LightGBM", 0.62), ("XGBoost", 0.67), ("XGBoost", 0.66),
-        ("XGBoost", 0.65), ("LightGBM", 0.61), ("XGBoost", 0.64), ("XGBoost", 0.63),
-        ("LightGBM", 0.60), ("XGBoost", 0.62), ("XGBoost", 0.61), ("XGBoost", 0.60),
-        ("LightGBM", 0.59), ("XGBoost", 0.59), ("XGBoost", 0.58), ("LightGBM", 0.58),
-        ("XGBoost", 0.57), ("LightGBM", 0.57), ("XGBoost", 0.56), ("LightGBM", 0.56),
-        ("XGBoost", 0.55), ("LightGBM", 0.55), ("XGBoost", 0.54), ("LightGBM", 0.54),
-        ("XGBoost", 0.53), ("LightGBM", 0.53), ("XGBoost", 0.52), ("LightGBM", 0.52),
-        ("XGBoost", 0.51), ("LightGBM", 0.51), ("XGBoost", 0.50), ("LightGBM", 0.50),
+        ("LSTM", 1.00), ("RandomForest", 0.86), ("RandomForest", 0.87), ("RandomForest", 0.85),
+        ("RandomForest", 0.88), ("Transformer", 0.92), ("RandomForest", 0.83), ("RandomForest", 0.80),
+        ("RandomForest", 0.81), ("RandomForest", 0.84), ("RandomForest", 0.82), ("RandomForest", 0.79),
+        ("XGBoost", 0.97), ("RandomForest", 0.89), ("XGBoost", 0.98), ("RandomForest", 0.78),
+        ("RandomForest", 0.77), ("XGBoost", 0.96), ("XGBoost", 0.95), ("RandomForest", 0.76),
+        ("XGBoost", 0.99), ("RandomForest", 0.75), ("XGBoost", 0.94), ("RandomForest", 0.74),
+        ("XGBoost", 0.93), ("XGBoost", 0.92), ("RandomForest", 0.73), ("XGBoost", 0.91),
+        ("RandomForest", 0.72), ("XGBoost", 0.90), ("XGBoost", 0.88), ("XGBoost", 0.89),
+        ("RandomForest", 0.71), ("XGBoost", 0.87), ("XGBoost", 0.86), ("XGBoost", 0.85),
+        ("Transformer", 0.90), ("RandomForest", 0.70), ("XGBoost", 0.84), ("XGBoost", 0.83),
+        ("XGBoost", 0.82), ("XGBoost", 0.81), ("RandomForest", 0.69), ("Transformer", 0.87),
+        ("XGBoost", 0.80), ("XGBoost", 0.79), ("XGBoost", 0.78), ("RandomForest", 0.68),
+        ("Transformer", 0.86), ("Transformer", 0.89), ("XGBoost", 0.77), ("Transformer", 0.88),
+        ("XGBoost", 0.76), ("XGBoost", 0.75), ("XGBoost", 0.74), ("RandomForest", 0.67),
+        ("XGBoost", 0.73), ("XGBoost", 0.72), ("Transformer", 0.85), ("XGBoost", 0.71),
+        ("Transformer", 0.93), ("RandomForest", 0.66), ("XGBoost", 0.70), ("XGBoost", 0.69),
+        ("XGBoost", 0.68), ("RandomForest", 0.65), ("XGBoost", 0.67), ("XGBoost", 0.66),
+        ("XGBoost", 0.65), ("RandomForest", 0.64), ("XGBoost", 0.63), ("XGBoost", 0.62),
+        ("RandomForest", 0.63), ("XGBoost", 0.61), ("XGBoost", 0.60), ("XGBoost", 0.59),
+        ("XGBoost", 0.58), ("RandomForest", 0.62), ("XGBoost", 0.57), ("XGBoost", 0.56),
+        ("XGBoost", 0.55), ("RandomForest", 0.61), ("XGBoost", 0.54), ("XGBoost", 0.53),
+        ("XGBoost", 0.52), ("RandomForest", 0.60), ("XGBoost", 0.51), ("XGBoost", 0.50),
+        ("LSTM", 0.98), ("Transformer", 0.84), ("RandomForest", 0.59), ("RandomForest", 0.58),
+        ("Transformer", 0.91), ("LightGBM", 0.71), ("RandomForest", 0.57), ("LightGBM", 0.72),
+        ("LightGBM", 0.82), ("RandomForest", 0.56), ("LightGBM", 0.67),
     ]
 
     for model_name, threshold in ladder:

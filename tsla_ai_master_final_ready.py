@@ -1532,6 +1532,9 @@ def _determine_position_size(
     if affordable <= 0:
         return 0, False
     qty_equity = min(qty_equity, affordable)
+    if qty_equity <= 0 and affordable > 0:
+        qty_equity = min(affordable, lot_size if lot_size > 0 else 1)
+        used_loss_sizing = False
     if qty_equity <= 0 and used_loss_sizing:
         used_loss_sizing = False
     return qty_equity, used_loss_sizing

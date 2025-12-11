@@ -224,27 +224,25 @@ def predict_tcn(df: pd.DataFrame, seq_len: int = 120):
     return np.array([prob]), np.array([vote])
 
 # ================== 兼容你的真实模型架构 ==================
-def predict_lstm(df: pd.DataFrame, seq_len: int = 60):
+def predict_lstm(df: pd.DataFrame, seq_len: int = 120):
     path = _find("updated_lstm.pt, lstm_best.pt, lstm_*.pt")
     if not path: return np.array([]), np.array([])
 
     try:
         from models.lstm import AttentiveBiLSTM
-        
-        # 强制使用 3 层（你当前所有 lstm_best.pt 都是 3 层训练的）
-        model = AttentiveBiLSTM(input_size=len(FEATURE_NAMES), hidden_size=151, num_layers=3)
-        state_dict = torch.load(path, map_location="cpu")
-        
-        # 可选：如果还是报 missing key，自动删掉第3层权重再加载（极端兼容）
-        if "lstm.weight_ih_l2" not in state_dict:
-            # 旧2层模型权重 → 复制到第3层（几乎不会走到这里）
-            for k in list(state_dict.keys()):
-                if k.startswith("lstm.") and ("l1" in k or "l0" in k):
-                    new_k = k.replace("l1", "l2") if "reverse" not in k else k.replace("l1_reverse", "l2_reverse")
-                    state_dict[new_k] = state_dict[k]
-        
+
+        model = AttentiveBiLSTM(
+            input_size=len(FEATURE_NAMES),
+            hidden_size=384,
+            num_layers=4,
+            dropout=0.4,
+            seq_len=120,
+            bidirectional=True
+        ).to(device)
+        state_dict = torch.load(path, map_location=device)
+
         model.load_state_dict(state_dict, strict=False)  # 改成 strict=False 防止残缺报错
-        logging.info(f"LSTM loaded successfully (3 layers) from {path.name}")
+        logging.info(f"LSTM loaded successfully (4 layers) from {path.name}")
         model.eval()
     except Exception as e:
         logging.error(f"LSTM load failed: {e}")

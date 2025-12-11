@@ -1297,6 +1297,7 @@ ORDER_SIZE = int(os.getenv("ORDER_SIZE", "1"))
 MAX_DAILY_PUT_TRADES = int(os.getenv("MAX_DAILY_PUT_TRADES", "15"))
 MAX_DAILY_CALL_TRADES = int(os.getenv("MAX_DAILY_CALL_TRADES", "15"))
 DEFAULT_EQUITY_FRACTION = 0.01  # Target 1% of account equity per trade
+MAX_TICKER_EQUITY_FRACTION = 0.16  # Cap exposure per ticker at 16% of equity
 # Validate .env configurations
 required_env_vars = ["ORDER_SIZE", "MAX_DAILY_PUT_TRADES", "MAX_DAILY_CALL_TRADES"]
 for var in required_env_vars:
@@ -1538,33 +1539,6 @@ def _determine_position_size(
     if qty_equity <= 0 and used_loss_sizing:
         used_loss_sizing = False
     return qty_equity, used_loss_sizing
-
-
-def _calculate_pyramiding_quantity(
-    current_size: int, lot_size: int, price: float, net_liq: float
-) -> int:
-    """Return the incremental shares needed to double ``current_size``.
-
-    The helper respects lot size constraints and available equity so that
-    pyramiding never requests more shares than can be afforded or routed.
-    """
-
-    if current_size <= 0 or price <= 0 or net_liq <= 0:
-        return 0
-
-    target_size = current_size * 2
-    if lot_size > 1:
-        target_size = max(lot_size, math.ceil(target_size / lot_size) * lot_size)
-
-    qty_equity = target_size - current_size
-    if lot_size > 1 and qty_equity > 0:
-        qty_equity = max(lot_size, (qty_equity // lot_size) * lot_size)
-
-    affordable = int(net_liq // price)
-    if lot_size > 1:
-        affordable = (affordable // lot_size) * lot_size
-
-    return max(0, min(qty_equity, affordable))
 # Initialize OpenAI and xAI clients
 #
 # These clients were previously instantiated unconditionally using API keys
@@ -3572,15 +3546,15 @@ def execute_stock_trade_ibkr(
     price_above_ema10_1d: bool | None = None,
 ) -> bool:
     """Execute a stock trade sized to a fraction of account equity.
-    By default the function targets ``1%`` of total equity per trade. Hong Kong
-    tickers continue to use a fixed ``100`` shares. The helper now enforces
-    directional positioning:
+    By default the function targets ``1%`` of total equity per trade while
+    respecting exchange lot sizes (e.g., ``100`` shares for many Hong Kong
+    tickers). The helper now enforces directional positioning:
     * ``"BUY"`` signals first cover any open short exposure before initiating a
     new long position.
     * ``"SELL"`` signals close existing long holdings before initiating or
       adding to short exposure.
-    * If an open position is profitable, new orders in the same direction
-      double the current holding.
+    * Each add uses a fresh ``1%`` equity allocation (or provided fraction)
+      and total exposure per ticker is capped at ``16%`` of account equity.
     * If an open position is at a loss, new orders in the same direction add to
       the position using the standard sizing rules instead of being skipped.
     """
@@ -3655,6 +3629,25 @@ def execute_stock_trade_ibkr(
         )
         profitable_position, losing_position = _refresh_position_flags()
 
+    current_alloc_fraction = (
+        (abs(pos_qty) * price) / net_liq if pos_qty and net_liq > 0 else 0.0
+    )
+    remaining_allocation = max(
+        0.0, MAX_TICKER_EQUITY_FRACTION - current_alloc_fraction
+    )
+    base_fraction = (
+        equity_fraction if equity_fraction is not None else DEFAULT_EQUITY_FRACTION
+    )
+
+    if remaining_allocation <= 0:
+        logger.info(
+            "🚫 Skipping %s for %s — max allocation %.0f%% of equity already used.",
+            decision,
+            ticker,
+            MAX_TICKER_EQUITY_FRACTION * 100,
+        )
+        return False
+
     if same_direction_as_position and losing_position:
         logger.info(
             "🚫 Skipping %s for %s — existing position is at a floating loss (avg %.2f vs. %.2f).",
@@ -3680,33 +3673,32 @@ def execute_stock_trade_ibkr(
             price,
         )
         return False
-    if same_direction_as_position and profitable_position:
-        qty_equity = _calculate_pyramiding_quantity(abs(pos_qty), lot_size, price, net_liq)
-        if qty_equity <= 0:
-            logger.info(
-                "Insufficient equity to scale profitable %s position for %s. Skipping order.",
-                ticker,
-                decision,
-            )
-            return False
+
+    desired_fraction = min(base_fraction, remaining_allocation)
+    qty_equity, _ = _determine_position_size(
+        ticker,
+        price,
+        net_liq,
+        desired_fraction,
+        last_pnl,
+        last_size,
+        allow_loss_doubling=False,
+        max_equity_fraction=remaining_allocation,
+    )
+    if qty_equity <= 0:
         logger.info(
-            "🏗️ Pyramiding profitable position for %s: adding %s shares to double from %s.",
+            "Calculated quantity 0 for %s (%s). Remaining allocation: %.2f%%.",
             ticker,
-            qty_equity,
-            abs(pos_qty),
+            decision,
+            remaining_allocation * 100,
         )
-    elif ticker.isdigit():
-        qty_equity = 100
-    else:
-        qty_equity, _ = _determine_position_size(
-            ticker,
-            price,
-            net_liq,
-            equity_fraction,
-            last_pnl,
-            last_size,
-            allow_loss_doubling=False,
-        )
+        return False
+    logger.info(
+        "🏗️ Position add for %s using %.2f%% equity (remaining cap %.2f%%).",
+        ticker,
+        desired_fraction * 100,
+        remaining_allocation * 100,
+    )
     if decision == "BUY":
         if pos_qty < 0:
             if not close_short_position(ib, ticker, price):

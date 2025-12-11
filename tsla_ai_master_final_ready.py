@@ -5225,6 +5225,15 @@ def process_single_ticker(
     stock_decision = stock_mapping.get(ml_vote, "HOLD")
     stock_trade_source = "ML_STOCK"
     stock_equity_fraction = None
+
+    # === UNIVERSAL 10-DAY EMA FILTER (APPLIES TO EVERYTHING INCLUDING AAPU) ===
+    if stock_decision == "BUY" and current_price < ema10_1d:
+        logger.info(
+            f"Skipping BUY for {ticker} — price {current_price:.2f} "
+            f"is below 10-day EMA ({ema10_1d:.2f})"
+        )
+        return
+
     pos_qty, avg_cost = get_position_info(ib, ticker)
     logger.info(f"ML stock decision for {ticker}: {stock_decision}")
     log_model_decision(

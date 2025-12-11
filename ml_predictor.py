@@ -231,24 +231,86 @@ def predict_lstm(df: pd.DataFrame, seq_len: int = 120):
     try:
         from models.lstm import AttentiveBiLSTM
 
-        model = AttentiveBiLSTM(
-            input_size=len(FEATURE_NAMES),
-            hidden_size=384,
-            num_layers=4,
-            dropout=0.4,
-            seq_len=120,
-            bidirectional=True
-        ).to(device)
         state_dict = torch.load(path, map_location=device)
 
-        model.load_state_dict(state_dict, strict=False)  # 改成 strict=False 防止残缺报错
-        logging.info(f"LSTM loaded successfully (4 layers) from {path.name}")
+        # Infer architecture from checkpoint to avoid shape mismatches.
+        input_size = len(FEATURE_NAMES)
+        hidden_size = 384
+        num_layers = 4
+        bidirectional = True
+
+        if "input_proj.weight" in state_dict:
+            weight_shape = state_dict["input_proj.weight"].shape
+            hidden_size = weight_shape[0]
+            input_size = weight_shape[1]
+
+        layer_ids = set()
+        for key in state_dict.keys():
+            if key.startswith("lstm.weight_ih_l"):
+                # Keys look like lstm.weight_ih_l0 or lstm.weight_ih_l0_reverse
+                suffix = key.replace("lstm.weight_ih_l", "")
+                layer_id = suffix.split("_")[0]
+                if layer_id.isdigit():
+                    layer_ids.add(int(layer_id))
+            if "_reverse" in key:
+                bidirectional = True
+
+        if layer_ids:
+            num_layers = max(layer_ids) + 1
+
+        model = AttentiveBiLSTM(
+            input_size=input_size,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            dropout=0.4,
+            seq_len=seq_len,
+            bidirectional=bidirectional,
+        ).to(device)
+
+        # Drop incompatible tensors instead of failing hard so we can still load
+        # older checkpoints with different widths.
+        model_state = model.state_dict()
+        compatible_state = {}
+        skipped = []
+        for name, param in state_dict.items():
+            target = model_state.get(name)
+            if target is not None and target.shape == param.shape:
+                compatible_state[name] = param
+            else:
+                skipped.append(name)
+
+        model_state.update(compatible_state)
+        model.load_state_dict(model_state)
+
+        if skipped:
+            logging.warning(
+                "LSTM load: skipped %d parameters due to shape mismatch (%s)",
+                len(skipped),
+                ", ".join(skipped[:5]) + ("..." if len(skipped) > 5 else ""),
+            )
+
+        logging.info(
+            "LSTM loaded successfully from %s (input=%d, hidden=%d, layers=%d, bidirectional=%s)",
+            path.name,
+            input_size,
+            hidden_size,
+            num_layers,
+            bidirectional,
+        )
         model.eval()
     except Exception as e:
         logging.error(f"LSTM load failed: {e}")
         return np.array([]), np.array([])
 
-    seq = pad_sequence_to_length(df, seq_len)
+    seq = pad_sequence_to_length(df[FEATURE_NAMES].fillna(0), seq_len, FEATURE_NAMES)
+
+    # Align runtime features with the checkpoint input width.
+    feature_gap = input_size - seq.shape[1]
+    if feature_gap > 0:
+        seq = np.pad(seq, ((0, 0), (0, feature_gap)), mode="constant")
+    elif feature_gap < 0:
+        seq = seq[:, :input_size]
+
     if len(seq) < seq_len: return np.array([]), np.array([])
     X = torch.tensor(seq, dtype=torch.float32).unsqueeze(0)
     with torch.no_grad():

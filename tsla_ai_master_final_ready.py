@@ -3543,7 +3543,7 @@ def execute_stock_trade_ibkr(
     *,
     equity_fraction: Optional[float] = None,
     source_label: str = "ML_STOCK",
-    price_above_ema10_1d: bool | None = None,
+    price_above_ema10_1d: float | None = None,
 ) -> bool:
     """Execute a stock trade sized to a fraction of account equity.
     By default the function targets ``1%`` of total equity per trade while
@@ -3575,7 +3575,8 @@ def execute_stock_trade_ibkr(
             logger.debug("Failed trading session check: %s", exc)
 
     pos_qty, avg_cost = get_position_info(ib, ticker)
-    above_ema10 = bool(price_above_ema10_1d)
+    val = price_above_ema10_1d
+    above_ema10 = (val is not None) and (float(val) >= 1.0)
     below_ema10 = not above_ema10
     try:
         net_liq = get_net_liquidity(ib) or 0.0
@@ -4727,15 +4728,18 @@ def process_single_ticker(
     price_above_ema10_1d = _get_indicator_value(
         "price_above_ema10", "1 day", False, "price_above_ema10_1d"
     )
+    price_above_ema10_flag = (price_above_ema10_1d is not None) and (
+        float(price_above_ema10_1d) >= 1.0
+    )
 
-    if price_above_ema10_1d and pos_qty < 0:
+    if price_above_ema10_flag and pos_qty < 0:
         logger.info(
             "📈 Price above 10-day EMA — closing short position for %s before new decisions.",
             ticker,
         )
         if close_short_position(ib, ticker, current_price, allow_after_hours=True):
             pos_qty, avg_cost = get_position_info(ib, ticker)
-    if (not price_above_ema10_1d) and pos_qty > 0:
+    if (not price_above_ema10_flag) and pos_qty > 0:
         logger.info(
             "📉 Price below 10-day EMA — closing long position for %s before new decisions.",
             ticker,
@@ -5277,7 +5281,7 @@ def process_single_ticker(
             current_price,
             equity_fraction=stock_equity_fraction,
             source_label=stock_trade_source,
-            price_above_ema10_1d=bool(price_above_ema10_1d),
+            price_above_ema10_1d=price_above_ema10_1d,
         )
     else:
         logger.info(

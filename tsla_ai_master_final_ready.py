@@ -4725,11 +4725,16 @@ def process_single_ticker(
     ema10_change_1d = _get_indicator_value(
         "ema10_change", "1 day", 0.0, "ema10_change_1d"
     )
-    price_above_ema10_1d = _get_indicator_value(
-        "price_above_ema10", "1 day", False, "price_above_ema10_1d"
+    ema10_value_1d = float(ema10_1d) if ema10_1d is not None else None
+    price_above_ema10_flag = (
+        (ema10_value_1d is not None)
+        and (ema10_value_1d > 0)
+        and (current_price > ema10_value_1d)
     )
-    price_above_ema10_flag = (price_above_ema10_1d is not None) and (
-        float(price_above_ema10_1d) >= 1.0
+    price_above_ema10_1d = (
+        (current_price / ema10_value_1d)
+        if (ema10_value_1d is not None and ema10_value_1d > 0)
+        else None
     )
 
     if price_above_ema10_flag and pos_qty < 0:

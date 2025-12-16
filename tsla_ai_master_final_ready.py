@@ -5225,14 +5225,6 @@ def process_single_ticker(
     stock_trade_source = "ML_STOCK"
     stock_equity_fraction = None
 
-    # === UNIVERSAL 10-DAY EMA FILTER (APPLIES TO EVERYTHING INCLUDING AAPU) ===
-    if stock_decision == "BUY" and current_price < ema10_1d:
-        logger.info(
-            f"Skipping BUY for {ticker} — price {current_price:.2f} "
-            f"is below 10-day EMA ({ema10_1d:.2f})"
-        )
-        return
-
     pos_qty, avg_cost = get_position_info(ib, ticker)
     logger.info(f"ML stock decision for {ticker}: {stock_decision}")
     log_model_decision(
@@ -5274,6 +5266,17 @@ def process_single_ticker(
         }
     )
     if stock_decision in {"BUY", "SELL"}:
+        computed_above_ema10 = (price_above_ema10_1d is not None) and (
+            float(price_above_ema10_1d) >= 1.0
+        )
+        logger.info(
+            "Calling execute_stock_trade_ibkr with price %.4f, EMA10 %.4f, "
+            "raw flag %s, computed above_ema10=%s",
+            current_price,
+            ema10_1d,
+            price_above_ema10_1d,
+            computed_above_ema10,
+        )
         execute_stock_trade_ibkr(
             ib,
             ticker,

@@ -3543,7 +3543,7 @@ def execute_stock_trade_ibkr(
     *,
     equity_fraction: Optional[float] = None,
     source_label: str = "ML_STOCK",
-    price_above_ema10_1d: float | None = None,
+    price_above_ema10_1d: float,
 ) -> bool:
     """Execute a stock trade sized to a fraction of account equity.
     By default the function targets ``1%`` of total equity per trade while
@@ -3561,6 +3561,8 @@ def execute_stock_trade_ibkr(
     if decision not in {"BUY", "SELL"}:
         return False
 
+    assert price_above_ema10_1d is not None, "EMA10 ratio must be provided"
+
     if not ticker.isdigit() and ticker != "MC":
         try:
             session = _us_trading_session()
@@ -3575,8 +3577,7 @@ def execute_stock_trade_ibkr(
             logger.debug("Failed trading session check: %s", exc)
 
     pos_qty, avg_cost = get_position_info(ib, ticker)
-    val = price_above_ema10_1d
-    above_ema10 = (val is not None) and (float(val) >= 1.0)
+    above_ema10 = float(price_above_ema10_1d) >= 1.0
     below_ema10 = not above_ema10
     try:
         net_liq = get_net_liquidity(ib) or 0.0
@@ -4725,16 +4726,12 @@ def process_single_ticker(
     ema10_change_1d = _get_indicator_value(
         "ema10_change", "1 day", 0.0, "ema10_change_1d"
     )
-    ema10_value_1d = float(ema10_1d) if ema10_1d is not None else None
+    ema10_value_1d = float(ema10_1d) if ema10_1d is not None else 0.0
     price_above_ema10_flag = (
-        (ema10_value_1d is not None)
-        and (ema10_value_1d > 0)
-        and (current_price > ema10_value_1d)
+        (ema10_value_1d > 0) and (current_price > ema10_value_1d)
     )
     price_above_ema10_1d = (
-        (current_price / ema10_value_1d)
-        if (ema10_value_1d is not None and ema10_value_1d > 0)
-        else None
+        (current_price / ema10_value_1d) if (ema10_value_1d > 0) else 0.0
     )
 
     if price_above_ema10_flag and pos_qty < 0:

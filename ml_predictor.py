@@ -312,7 +312,7 @@ def predict_lstm(df: pd.DataFrame, seq_len: int = 120):
         seq = seq[:, :input_size]
 
     if len(seq) < seq_len: return np.array([]), np.array([])
-    X = torch.tensor(seq, dtype=torch.float32).unsqueeze(0)
+    X = torch.tensor(seq, dtype=torch.float32).unsqueeze(0).to(device)
     with torch.no_grad():
         prob = torch.sigmoid(model(X)).item()
     return np.array([prob]), np.array([1 if prob > 0.5 else 0])

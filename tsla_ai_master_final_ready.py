@@ -3579,6 +3579,52 @@ def execute_stock_trade_ibkr(
     pos_qty, avg_cost = get_position_info(ib, ticker)
     above_ema10 = float(price_above_ema10_1d) >= 1.0
     below_ema10 = not above_ema10
+    profitable_long = pos_qty > 0 and avg_cost > 0 and price > avg_cost
+    profitable_short = pos_qty < 0 and avg_cost > 0 and price < avg_cost
+    if decision == "SELL" and above_ema10 and profitable_long:
+        logger.info(
+            "📈 Price above 10-day EMA — closing long position for %s after SELL decision.",
+            ticker,
+        )
+        if not close_stock_position(ib, ticker, price):
+            logger.warning(
+                "⚠️ Failed to close long for %s while price is above 10-day EMA.",
+                ticker,
+            )
+        return False
+    if decision == "BUY" and below_ema10 and profitable_short:
+        logger.info(
+            "📉 Price below 10-day EMA — closing short position for %s after BUY decision.",
+            ticker,
+        )
+        if not close_short_position(ib, ticker, price):
+            logger.warning(
+                "⚠️ Failed to close short for %s while price is below 10-day EMA.",
+                ticker,
+            )
+        return False
+    if decision == "SELL" and below_ema10 and pos_qty > 0:
+        logger.info(
+            "📉 Price below 10-day EMA — closing long position for %s after SELL decision.",
+            ticker,
+        )
+        if not close_stock_position(ib, ticker, price):
+            logger.warning(
+                "⚠️ Failed to close long for %s while price is below 10-day EMA.",
+                ticker,
+            )
+        return False
+    if decision == "BUY" and above_ema10 and pos_qty < 0:
+        logger.info(
+            "📈 Price above 10-day EMA — closing short position for %s after BUY decision.",
+            ticker,
+        )
+        if not close_short_position(ib, ticker, price):
+            logger.warning(
+                "⚠️ Failed to close short for %s while price is above 10-day EMA.",
+                ticker,
+            )
+        return False
     try:
         net_liq = get_net_liquidity(ib) or 0.0
     except Exception as e:

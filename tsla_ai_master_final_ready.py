@@ -3579,7 +3579,9 @@ def execute_stock_trade_ibkr(
     pos_qty, avg_cost = get_position_info(ib, ticker)
     above_ema10 = float(price_above_ema10_1d) >= 1.0
     below_ema10 = not above_ema10
-    if decision == "SELL" and above_ema10 and pos_qty > 0:
+    profitable_long = pos_qty > 0 and avg_cost > 0 and price > avg_cost
+    profitable_short = pos_qty < 0 and avg_cost > 0 and price < avg_cost
+    if decision == "SELL" and above_ema10 and profitable_long:
         logger.info(
             "📈 Price above 10-day EMA — closing long position for %s after SELL decision.",
             ticker,
@@ -3590,7 +3592,7 @@ def execute_stock_trade_ibkr(
                 ticker,
             )
         return False
-    if decision == "BUY" and below_ema10 and pos_qty < 0:
+    if decision == "BUY" and below_ema10 and profitable_short:
         logger.info(
             "📉 Price below 10-day EMA — closing short position for %s after BUY decision.",
             ticker,

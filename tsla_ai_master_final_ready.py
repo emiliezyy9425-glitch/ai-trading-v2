@@ -3579,6 +3579,65 @@ def execute_stock_trade_ibkr(
     pos_qty, avg_cost = get_position_info(ib, ticker)
     above_ema10 = float(price_above_ema10_1d) >= 1.0
     below_ema10 = not above_ema10
+    profitable_long = pos_qty > 0 and avg_cost > 0 and price > avg_cost
+    profitable_short = pos_qty < 0 and avg_cost > 0 and price < avg_cost
+    losing_long = pos_qty > 0 and avg_cost > 0 and price < avg_cost
+    losing_short = pos_qty < 0 and avg_cost > 0 and price > avg_cost
+    forced_qty = None
+    if decision == "SELL" and above_ema10 and profitable_long:
+        logger.info(
+            "📈 Price above 10-day EMA — closing long position for %s after SELL decision.",
+            ticker,
+        )
+        if not close_stock_position(ib, ticker, price):
+            logger.warning(
+                "⚠️ Failed to close long for %s while price is above 10-day EMA.",
+                ticker,
+            )
+        return False
+    if decision == "BUY" and below_ema10 and profitable_short:
+        logger.info(
+            "📉 Price below 10-day EMA — closing short position for %s after BUY decision.",
+            ticker,
+        )
+        if not close_short_position(ib, ticker, price):
+            logger.warning(
+                "⚠️ Failed to close short for %s while price is below 10-day EMA.",
+                ticker,
+            )
+        return False
+    if decision == "SELL" and below_ema10 and pos_qty > 0:
+        logger.info(
+            "📉 Price below 10-day EMA — closing long position for %s after SELL decision.",
+            ticker,
+        )
+        if not close_stock_position(ib, ticker, price):
+            logger.warning(
+                "⚠️ Failed to close long for %s while price is below 10-day EMA.",
+                ticker,
+            )
+            return False
+        if losing_long:
+            forced_qty = abs(pos_qty) * 2
+            pos_qty, avg_cost = get_position_info(ib, ticker)
+        else:
+            pos_qty, avg_cost = get_position_info(ib, ticker)
+    if decision == "BUY" and above_ema10 and pos_qty < 0:
+        logger.info(
+            "📈 Price above 10-day EMA — closing short position for %s after BUY decision.",
+            ticker,
+        )
+        if not close_short_position(ib, ticker, price):
+            logger.warning(
+                "⚠️ Failed to close short for %s while price is above 10-day EMA.",
+                ticker,
+            )
+            return False
+        if losing_short:
+            forced_qty = abs(pos_qty) * 2
+            pos_qty, avg_cost = get_position_info(ib, ticker)
+        else:
+            pos_qty, avg_cost = get_position_info(ib, ticker)
     try:
         net_liq = get_net_liquidity(ib) or 0.0
     except Exception as e:
@@ -3586,6 +3645,8 @@ def execute_stock_trade_ibkr(
         net_liq = 0.0
     last_pnl, last_size = get_last_trade_result(ticker, source_label)
     lot_size = get_round_lot_size(price)
+    if forced_qty is not None and lot_size > 0:
+        forced_qty = max(int(forced_qty), lot_size)
     same_direction_as_position = (decision == "BUY" and pos_qty > 0) or (
         decision == "SELL" and pos_qty < 0
     )
@@ -3677,16 +3738,19 @@ def execute_stock_trade_ibkr(
         return False
 
     desired_fraction = min(base_fraction, remaining_allocation)
-    qty_equity, _ = _determine_position_size(
-        ticker,
-        price,
-        net_liq,
-        desired_fraction,
-        last_pnl,
-        last_size,
-        allow_loss_doubling=False,
-        max_equity_fraction=remaining_allocation,
-    )
+    if forced_qty is None:
+        qty_equity, _ = _determine_position_size(
+            ticker,
+            price,
+            net_liq,
+            desired_fraction,
+            last_pnl,
+            last_size,
+            allow_loss_doubling=False,
+            max_equity_fraction=remaining_allocation,
+        )
+    else:
+        qty_equity = int(forced_qty)
     if qty_equity <= 0:
         logger.info(
             "Calculated quantity 0 for %s (%s). Remaining allocation: %.2f%%.",
